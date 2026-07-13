@@ -3,6 +3,7 @@ const state = { records: [], connected: false, groupFilter: null, notesTimer: nu
 const ROOT_FOLDER='OJT İş Takip', DATA_FILE='ojt-kayitlari.json', NOTES_FILE='ojt-notlar.json';
 const CLIENT_ID=window.OJT_CONFIG?.GOOGLE_CLIENT_ID||'';
 const SCOPES='https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email';
+const TOKEN_KEY='ojt_google_access_token';
 const TASKS = [
   {id:'1',group:'1',name:'Uçak defterinde arıza kaydı'}, {id:'2',group:'1',name:"Uçak defterinde MEL'e göre sefere verme işlemleri"},
   {id:'3',group:'2',name:'Servis işlemleri (Yağlama)'}, {id:'4',group:'2',name:'Servis işlemleri (motor hidrolik ikmal)'}, {id:'5',group:'2',name:'Servis işlemleri (lastik değişimi)'},
@@ -19,6 +20,15 @@ const formatDuration = value => { const minutes=Math.max(0,Math.round(Number(val
 const formatDate = value => { const [y,m,d]=String(value).split('-'); return y&&m&&d?`${d}.${m}.${y}`:''; };
 
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function saveToken(response){
+  const saved={accessToken:response.access_token,expiresAt:Date.now()+(Number(response.expires_in||3600)*1000)};
+  localStorage.setItem(TOKEN_KEY,JSON.stringify(saved));
+}
+function restoreToken(){
+  try{const saved=JSON.parse(localStorage.getItem(TOKEN_KEY)||'null');if(saved?.accessToken&&saved.expiresAt>Date.now()+60000){state.accessToken=saved.accessToken;state.connected=true;return true}}catch{}
+  localStorage.removeItem(TOKEN_KEY);return false;
+}
+function clearToken(){localStorage.removeItem(TOKEN_KEY);state.accessToken=null;state.connected=false;state.driveContext=null}
 async function waitForGoogle(){for(let i=0;i<80;i++){if(window.google?.accounts?.oauth2)return;if(i===79)throw new Error('Google giriş sistemi yüklenemedi.');await sleep(100)}}
 async function connectGoogle(){
   if(!CLIENT_ID||CLIENT_ID.startsWith('BURAYA_'))throw new Error('Önce public/config.js dosyasına Google Client ID yazılmalıdır.');
@@ -27,7 +37,7 @@ async function connectGoogle(){
     if(!state.tokenClient)state.tokenClient=google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPES,callback:()=>{}});
     state.tokenClient.callback=response=>{
       if(response.error)return reject(new Error(response.error_description||response.error));
-      state.accessToken=response.access_token;state.connected=true;state.driveContext=null;localStorage.setItem('ojt_google_authorized','1');resolve(response);
+      state.accessToken=response.access_token;state.connected=true;state.driveContext=null;saveToken(response);localStorage.setItem('ojt_google_authorized','1');resolve(response);
     };
     state.tokenClient.requestAccessToken({prompt:localStorage.getItem('ojt_google_authorized')?'':'consent'});
   });
@@ -35,7 +45,7 @@ async function connectGoogle(){
 async function driveFetch(url,options={}){
   if(!state.accessToken)throw new Error('Google Drive bağlantısı gerekli.');
   const response=await fetch(url.startsWith('http')?url:`https://www.googleapis.com/drive/v3${url}`,{...options,headers:{Authorization:`Bearer ${state.accessToken}`,...(options.headers||{})}});
-  if(response.status===401){state.connected=false;state.accessToken=null;throw new Error('Google oturumunun süresi doldu. Drive’a yeniden bağlanın.');}
+  if(response.status===401){clearToken();throw new Error('Google oturumunun süresi doldu. Drive’a yeniden bağlanın.');}
   if(!response.ok){let detail='';try{detail=(await response.json()).error?.message||''}catch{}throw new Error(detail||`Google Drive hatası (${response.status})`)}
   if(response.status===204)return null;const type=response.headers.get('content-type')||'';return type.includes('application/json')?response.json():response;
 }
@@ -177,7 +187,7 @@ async function load() {
   const [records,notes]=await Promise.all([readJson(DATA_FILE,[]),readJson(NOTES_FILE,{text:'',updatedAt:null})]);
   state.records=Array.isArray(records)?records:[];$('notes').value=notes.text||'';$('notes').disabled=false;$('notesStatus').textContent='Drive ile eşitlendi';render();
 }
-$('authButton').addEventListener('click',async()=>{try{if(state.connected){if(state.accessToken)google.accounts.oauth2.revoke(state.accessToken);localStorage.removeItem('ojt_google_authorized');state.connected=false;state.accessToken=null;state.user=null;state.records=[];await load()}else{await connectGoogle();await loadUser();await load()}}catch(error){toast(error.message)}});
+$('authButton').addEventListener('click',async()=>{try{if(state.connected){if(state.accessToken)google.accounts.oauth2.revoke(state.accessToken);localStorage.removeItem('ojt_google_authorized');clearToken();state.user=null;state.records=[];await load()}else{await connectGoogle();await loadUser();await load()}}catch(error){toast(error.message)}});
 $('recordForm').addEventListener('submit',async event=>{
   event.preventDefault(); if(!state.connected)return toast('Önce Google Drive’a bağlanın.');
   const record=Object.fromEntries(fields.map(id=>[id,id==='stamp'?$(id).checked:$(id).value.trim()])); record.duration=parseDuration(record.duration);
@@ -197,4 +207,4 @@ $('records').addEventListener('click',async event=>{
 });
 $('notes').addEventListener('input',()=>{if(!state.connected)return;clearTimeout(state.notesTimer);$('notesStatus').textContent='Kaydediliyor…';state.notesTimer=setTimeout(async()=>{try{await writeJson(NOTES_FILE,{text:$('notes').value.slice(0,50000),updatedAt:new Date().toISOString()});$('notesStatus').textContent='Drive’a kaydedildi'}catch(error){$('notesStatus').textContent='Kaydedilemedi';toast(error.message)}},700)});
 if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
-load().catch(error=>toast(error.message));
+(async()=>{try{if(restoreToken())await loadUser();await load()}catch(error){clearToken();state.user=null;await load();toast(error.message)}})();
