@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#173b30">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="OJT İş Takip">
+  <title>OJT İş Takip</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="eyebrow">KİŞİSEL ÇALIŞMA ALANI</span><h1>OJT İş Takip</h1></div>
+    <div class="actions"><span id="syncStatus" class="status">Kontrol ediliyor…</span><button id="authButton" class="button primary">Drive’a bağlan</button></div>
+  </header>
+  <main>
+    <section id="setupNotice" class="notice hidden"></section>
+    <section class="metrics" id="metrics"></section>
+    <section class="grid">
+      <aside class="panel form-panel">
+        <div class="panel-title"><div><span class="eyebrow">YENİ KAYIT</span><h2>İş bilgileri</h2></div><button id="resetButton" class="text-button" type="button">Temizle</button></div>
+        <form id="recordForm">
+          <input type="hidden" id="recordId">
+          <label class="wide">İş tanımı *<textarea id="description" rows="3" placeholder="Örn. RH pack flow control valve değişimi" required></textarea></label>
+          <div class="form-grid">
+            <label>W/O numarası *<input id="workOrder" required placeholder="WO-123456"></label>
+            <label>NRC numarası<input id="nrc" placeholder="NRC-…"></label>
+            <label>Bakım kartı no.<input id="taskCard" placeholder="Task card / AMM ref."></label>
+            <label>AML numarası<input id="aml" placeholder="Servise verme kaydı"></label>
+            <label>Tarih *<input id="date" type="date" required></label>
+            <label>Uçak / Tescil<input id="aircraft" placeholder="TC-J… / A320"></label>
+            <label>Süre (saat)<input id="duration" type="text" inputmode="decimal" placeholder="Örn. 0,75"></label>
+            <label>İş grubu<select id="group"><option value="1">Grup 1 · AML/MEL</option><option value="2">Grup 2 · Servis</option><option value="3">Grup 3 · Bakım kartları</option><option value="4">Grup 4 · Teknik işlemler</option><option value="optional">Optional</option></select></label>
+            <label>Ek-16 iş türü<select id="taskType" required></select></label>
+            <label>Belge türü<select id="documentType"><option value="task">Bakım kartı</option><option value="nrc">NRC / Item</option><option value="release">Servise verme / AML</option><option value="other">Diğer</option></select></label>
+          </div>
+          <fieldset id="stampField" class="hidden"><legend>Doğrulama</legend><label class="check"><input id="stamp" type="checkbox"> TT sicil kaşesi basıldı</label></fieldset>
+          <label class="wide file-drop">Taranmış belge <input id="document" type="file" accept=".pdf,image/*"><span>PDF veya görsel · en fazla 20 MB</span></label>
+          <div id="formWarnings" class="warnings hidden"></div>
+          <button class="button primary submit" type="submit">Kaydı Drive’a kaydet</button>
+        </form>
+        <section class="notes-box">
+          <div class="notes-title"><div><span class="eyebrow">DRIVE NOTLARI</span><h2>Not defteri</h2></div><span id="notesStatus">Bağlantı bekleniyor</span></div>
+          <textarea id="notes" rows="8" placeholder="Hatırlatmalarınızı buraya yazın…" disabled></textarea>
+        </section>
+      </aside>
+      <section class="panel records-panel">
+        <div class="panel-title"><div><span class="eyebrow">ARŞİV</span><h2>Kayıtlar</h2></div><div class="filters"><input id="search" type="search" placeholder="W/O, NRC, uçak veya iş ara"><input id="month" type="month"></div></div>
+        <div id="compliance" class="compliance"></div>
+        <div id="records" class="records"><div class="empty">Drive bağlantısı bekleniyor.</div></div>
+      </section>
+    </section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="config.js"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
