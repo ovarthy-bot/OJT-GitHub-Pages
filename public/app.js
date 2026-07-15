@@ -3,6 +3,7 @@ const state = { records: [], connected: false, groupFilter: null, notesTimer: nu
 const ROOT_FOLDER='OJT İş Takip', DATA_FILE='ojt-kayitlari.json', NOTES_FILE='ojt-notlar.json';
 const CLIENT_ID=window.OJT_CONFIG?.GOOGLE_CLIENT_ID||'';
 const SCOPES='https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email';
+const TOKEN_KEY='ojt_google_access_token';
 const TASKS = [
   {id:'1',group:'1',name:'Uçak defterinde arıza kaydı'}, {id:'2',group:'1',name:"Uçak defterinde MEL'e göre sefere verme işlemleri"},
   {id:'3',group:'2',name:'Servis işlemleri (Yağlama)'}, {id:'4',group:'2',name:'Servis işlemleri (motor hidrolik ikmal)'}, {id:'5',group:'2',name:'Servis işlemleri (lastik değişimi)'},
@@ -19,6 +20,15 @@ const formatDuration = value => { const minutes=Math.max(0,Math.round(Number(val
 const formatDate = value => { const [y,m,d]=String(value).split('-'); return y&&m&&d?`${d}.${m}.${y}`:''; };
 
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+function saveToken(response){
+  const saved={accessToken:response.access_token,expiresAt:Date.now()+(Number(response.expires_in||3600)*1000)};
+  localStorage.setItem(TOKEN_KEY,JSON.stringify(saved));
+}
+function restoreToken(){
+  try{const saved=JSON.parse(localStorage.getItem(TOKEN_KEY)||'null');if(saved?.accessToken&&saved.expiresAt>Date.now()+60000){state.accessToken=saved.accessToken;state.connected=true;return true}}catch{}
+  localStorage.removeItem(TOKEN_KEY);return false;
+}
+function clearToken(){localStorage.removeItem(TOKEN_KEY);state.accessToken=null;state.connected=false;state.driveContext=null}
 async function waitForGoogle(){for(let i=0;i<80;i++){if(window.google?.accounts?.oauth2)return;if(i===79)throw new Error('Google giriş sistemi yüklenemedi.');await sleep(100)}}
 async function connectGoogle(){
   if(!CLIENT_ID||CLIENT_ID.startsWith('BURAYA_'))throw new Error('Önce public/config.js dosyasına Google Client ID yazılmalıdır.');
@@ -27,7 +37,7 @@ async function connectGoogle(){
     if(!state.tokenClient)state.tokenClient=google.accounts.oauth2.initTokenClient({client_id:CLIENT_ID,scope:SCOPES,callback:()=>{}});
     state.tokenClient.callback=response=>{
       if(response.error)return reject(new Error(response.error_description||response.error));
-      state.accessToken=response.access_token;state.connected=true;state.driveContext=null;localStorage.setItem('ojt_google_authorized','1');resolve(response);
+      state.accessToken=response.access_token;state.connected=true;state.driveContext=null;saveToken(response);localStorage.setItem('ojt_google_authorized','1');resolve(response);
     };
     state.tokenClient.requestAccessToken({prompt:localStorage.getItem('ojt_google_authorized')?'':'consent'});
   });
@@ -35,7 +45,7 @@ async function connectGoogle(){
 async function driveFetch(url,options={}){
   if(!state.accessToken)throw new Error('Google Drive bağlantısı gerekli.');
   const response=await fetch(url.startsWith('http')?url:`https://www.googleapis.com/drive/v3${url}`,{...options,headers:{Authorization:`Bearer ${state.accessToken}`,...(options.headers||{})}});
-  if(response.status===401){state.connected=false;state.accessToken=null;throw new Error('Google oturumunun süresi doldu. Drive’a yeniden bağlanın.');}
+  if(response.status===401){clearToken();throw new Error('Google oturumunun süresi doldu. Drive’a yeniden bağlanın.');}
   if(!response.ok){let detail='';try{detail=(await response.json()).error?.message||''}catch{}throw new Error(detail||`Google Drive hatası (${response.status})`)}
   if(response.status===204)return null;const type=response.headers.get('content-type')||'';return type.includes('application/json')?response.json():response;
 }
@@ -78,10 +88,29 @@ async function deleteRecord(id){const record=state.records.find(item=>item.id===
 async function openDocument(id){const response=await driveFetch(`/files/${encodeURIComponent(id)}?alt=media`),blob=await response.blob(),url=URL.createObjectURL(blob);window.open(url,'_blank','noopener');setTimeout(()=>URL.revokeObjectURL(url),60000)}
 async function loadUser(){const response=await fetch('https://www.googleapis.com/oauth2/v2/userinfo',{headers:{Authorization:`Bearer ${state.accessToken}`}});if(response.ok)state.user=await response.json()}
 
+function openedTaskTypeIds() {
+  const opened=new Set();
+  state.records.forEach(record=>{
+    const directId=String(record.taskType??'').trim();
+    if(TASKS.some(task=>task.id===directId)){opened.add(directId);return}
+    const savedName=String(record.taskName??'').trim().toLocaleLowerCase('tr-TR');
+    const matched=TASKS.find(task=>task.name.toLocaleLowerCase('tr-TR')===savedName);
+    if(matched)opened.add(matched.id);
+  });
+  return opened;
+}
+function updateTaskTypeSelectColor() {
+  const unopened=$('taskType').selectedOptions[0]?.dataset.unopened==='true';
+  $('taskType').classList.toggle('unopened-task-selected',unopened);
+}
 function populateTaskTypes(group, selected='') {
-  const available=TASKS.filter(task=>task.group===group);
-  $('taskType').innerHTML='<option value="">İş türünü seçin</option>'+available.map(task=>`<option value="${task.id}">${task.id}. ${task.name}</option>`).join('');
+  const available=TASKS.filter(task=>task.group===group),opened=openedTaskTypeIds(),canEvaluate=state.connected;
+  $('taskType').innerHTML='<option value="">İş türünü seçin</option>'+available.map(task=>{
+    const unopened=canEvaluate&&!opened.has(task.id);
+    return `<option value="${task.id}"${unopened?' class="unopened-task-option" data-unopened="true" style="color:#b42318;font-weight:700"':''}>${task.id}. ${task.name}</option>`;
+  }).join('');
   $('taskType').value=selected;
+  updateTaskTypeSelectColor();
 }
 function updateStampVisibility() {
   const visible=Boolean($('taskCard').value.trim()||$('nrc').value.trim());
@@ -90,6 +119,7 @@ function updateStampVisibility() {
 }
 populateTaskTypes('1');
 $('group').addEventListener('change',()=>populateTaskTypes($('group').value));
+$('taskType').addEventListener('change',updateTaskTypeSelectColor);
 $('taskCard').addEventListener('input',updateStampVisibility); $('nrc').addEventListener('input',updateStampVisibility);
 
 function validation(record) {
@@ -146,11 +176,20 @@ function filteredRecords() {
   const query=$('search').value.trim().toLocaleLowerCase('tr-TR');
   return monthRecords().filter(r=>(!state.groupFilter||r.group===state.groupFilter)&&(!query||[r.description,r.workOrder,r.nrc,r.aircraft,r.taskName].some(v=>String(v||'').toLocaleLowerCase('tr-TR').includes(query))));
 }
+function unopenedArchiveTasks() {
+  if(!state.connected)return [];
+  const opened=openedTaskTypeIds(),query=$('search').value.trim().toLocaleLowerCase('tr-TR');
+  return TASKS.filter(task=>!opened.has(task.id))
+    .filter(task=>!state.groupFilter||task.group===state.groupFilter)
+    .filter(task=>!query||[task.id,task.name,task.group==='optional'?'optional':`grup ${task.group}`].some(value=>String(value).toLocaleLowerCase('tr-TR').includes(query)));
+}
+function taskGroupLabel(task) { return task.group==='optional'?'Optional':`Grup ${task.group}`; }
 function taskText(r) {
   const refs=[`W/O: ${r.workOrder}`]; if(r.taskCard) refs.push(`KART: ${r.taskCard}`); if(r.nrc) refs.push(`NRC: ${r.nrc}`); if(r.aml) refs.push(`AML: ${r.aml}`);
   return `${r.description} ${refs.join(' ')}`;
 }
 function render() {
+  populateTaskTypes($('group').value,$('taskType').value);
   const monthly=monthRecords(), eligible=eligibility(monthly), usable=monthly.filter(r=>eligible.get(r.id)!==false);
   const days=new Set(usable.map(r=>r.date)).size, complete=usable.filter(r=>validation(r).length===0&&r.document).length;
   const hours=usable.reduce((sum,r)=>sum+Number(r.duration||0),0);
@@ -162,13 +201,16 @@ function render() {
   }).join('');
   $('compliance').innerHTML=groupButtons+`<button type="button" data-clear-filter class="group-card clear ${!state.groupFilter?'active':''}"><strong>Filtreyi kaldır</strong><span>Tüm grupları göster</span></button>`;
   const records=filteredRecords().sort((a,b)=>(Number(eligible.get(b.id)!==false)-Number(eligible.get(a.id)!==false))||String(a.date).localeCompare(String(b.date)));
-  if(!records.length){$('records').innerHTML='<div class="empty">Bu filtreye uygun kayıt bulunamadı.</div>';return;}
-  $('records').innerHTML=`<div class="table-wrap"><table class="ojt-table"><thead><tr><th>NO</th><th>YAPILAN İŞLER <em>TASKS PERFORMED</em></th><th>UÇAK / ATÖLYE / KOMPONENT</th><th>TARİH</th><th>SÜRE</th><th>İŞLEM</th></tr></thead><tbody>${records.map((r,index)=>{
+  const unopenedTasks=unopenedArchiveTasks();
+  if(!records.length&&!unopenedTasks.length){$('records').innerHTML=`<div class="empty">${state.connected?'Bu filtreye uygun kayıt bulunamadı.':'Drive bağlantısı bekleniyor.'}</div>`;return;}
+  const recordRows=records.map((r,index)=>{
     const usableRow=eligible.get(r.id)!==false, issues=validation(r);
     const sameDateSelected=!usableRow&&monthly.some(other=>other.id!==r.id&&other.group===r.group&&other.date===r.date&&eligible.get(other.id)!==false);
     const unsuitableText=sameDateSelected?'Bu iş için uygun değil - aynı tarih kullanıldı':'Bu iş için uygun değil - 10 işlik taslak dışında kaldı';
     return `<tr class="${usableRow?'':'duplicate'}"><td data-label="NO">${index+1}</td><td data-label="YAPILAN İŞ"><strong>${esc(taskText(r))}</strong>${!usableRow?`<span class="unsuitable">${unsuitableText}</span>`:''}${issues.length?`<span class="row-warning">${issues.length} eksik bilgi</span>`:''}</td><td data-label="UÇAK / KOMPONENT">${esc(r.aircraft||'-')}</td><td data-label="TARİH">${formatDate(r.date)}</td><td data-label="SÜRE">${formatDuration(r.duration)}</td><td data-label="İŞLEM"><div class="record-actions">${r.document?`<button class="icon" data-document="${esc(r.document.id)}">Belge</button>`:''}<button class="icon" data-edit="${r.id}">Düzenle</button><button class="icon" data-delete="${r.id}">Sil</button></div></td></tr>`;
-  }).join('')}</tbody></table></div>`;
+  }).join('');
+  const unopenedRows=unopenedTasks.map(task=>`<tr class="unopened-archive-row"><td data-label="NO">—</td><td data-label="YAPILAN İŞ"><strong>${task.id}. ${esc(task.name)}</strong><span class="unopened-archive-note">Tüm kayıt geçmişinde henüz açılmadı · ${taskGroupLabel(task)}</span></td><td data-label="UÇAK / KOMPONENT">—</td><td data-label="TARİH">—</td><td data-label="SÜRE">—</td><td data-label="İŞLEM"><span class="unopened-archive-status">Kayıt yok</span></td></tr>`).join('');
+  $('records').innerHTML=`<div class="table-wrap"><table class="ojt-table"><thead><tr><th>NO</th><th>YAPILAN İŞLER <em>TASKS PERFORMED</em></th><th>UÇAK / ATÖLYE / KOMPONENT</th><th>TARİH</th><th>SÜRE</th><th>İŞLEM</th></tr></thead><tbody>${recordRows}${unopenedRows}</tbody></table></div>`;
 }
 async function load() {
   $('authButton').textContent=state.connected?'Bağlantıyı kes':'Drive’a bağlan';$('syncStatus').textContent=state.connected?`● ${state.user?.email||'Google Drive bağlı'}`:'Drive bağlı değil';
@@ -177,7 +219,7 @@ async function load() {
   const [records,notes]=await Promise.all([readJson(DATA_FILE,[]),readJson(NOTES_FILE,{text:'',updatedAt:null})]);
   state.records=Array.isArray(records)?records:[];$('notes').value=notes.text||'';$('notes').disabled=false;$('notesStatus').textContent='Drive ile eşitlendi';render();
 }
-$('authButton').addEventListener('click',async()=>{try{if(state.connected){if(state.accessToken)google.accounts.oauth2.revoke(state.accessToken);localStorage.removeItem('ojt_google_authorized');state.connected=false;state.accessToken=null;state.user=null;state.records=[];await load()}else{await connectGoogle();await loadUser();await load()}}catch(error){toast(error.message)}});
+$('authButton').addEventListener('click',async()=>{try{if(state.connected){if(state.accessToken)google.accounts.oauth2.revoke(state.accessToken);localStorage.removeItem('ojt_google_authorized');clearToken();state.user=null;state.records=[];await load()}else{await connectGoogle();await loadUser();await load()}}catch(error){toast(error.message)}});
 $('recordForm').addEventListener('submit',async event=>{
   event.preventDefault(); if(!state.connected)return toast('Önce Google Drive’a bağlanın.');
   const record=Object.fromEntries(fields.map(id=>[id,id==='stamp'?$(id).checked:$(id).value.trim()])); record.duration=parseDuration(record.duration);
@@ -197,4 +239,4 @@ $('records').addEventListener('click',async event=>{
 });
 $('notes').addEventListener('input',()=>{if(!state.connected)return;clearTimeout(state.notesTimer);$('notesStatus').textContent='Kaydediliyor…';state.notesTimer=setTimeout(async()=>{try{await writeJson(NOTES_FILE,{text:$('notes').value.slice(0,50000),updatedAt:new Date().toISOString()});$('notesStatus').textContent='Drive’a kaydedildi'}catch(error){$('notesStatus').textContent='Kaydedilemedi';toast(error.message)}},700)});
 if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
-load().catch(error=>toast(error.message));
+(async()=>{try{if(restoreToken())await loadUser();await load()}catch(error){clearToken();state.user=null;await load();toast(error.message)}})();

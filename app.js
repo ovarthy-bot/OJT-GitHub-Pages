@@ -176,6 +176,14 @@ function filteredRecords() {
   const query=$('search').value.trim().toLocaleLowerCase('tr-TR');
   return monthRecords().filter(r=>(!state.groupFilter||r.group===state.groupFilter)&&(!query||[r.description,r.workOrder,r.nrc,r.aircraft,r.taskName].some(v=>String(v||'').toLocaleLowerCase('tr-TR').includes(query))));
 }
+function unopenedArchiveTasks() {
+  if(!state.connected)return [];
+  const opened=openedTaskTypeIds(),query=$('search').value.trim().toLocaleLowerCase('tr-TR');
+  return TASKS.filter(task=>!opened.has(task.id))
+    .filter(task=>!state.groupFilter||task.group===state.groupFilter)
+    .filter(task=>!query||[task.id,task.name,task.group==='optional'?'optional':`grup ${task.group}`].some(value=>String(value).toLocaleLowerCase('tr-TR').includes(query)));
+}
+function taskGroupLabel(task) { return task.group==='optional'?'Optional':`Grup ${task.group}`; }
 function taskText(r) {
   const refs=[`W/O: ${r.workOrder}`]; if(r.taskCard) refs.push(`KART: ${r.taskCard}`); if(r.nrc) refs.push(`NRC: ${r.nrc}`); if(r.aml) refs.push(`AML: ${r.aml}`);
   return `${r.description} ${refs.join(' ')}`;
@@ -193,13 +201,16 @@ function render() {
   }).join('');
   $('compliance').innerHTML=groupButtons+`<button type="button" data-clear-filter class="group-card clear ${!state.groupFilter?'active':''}"><strong>Filtreyi kaldır</strong><span>Tüm grupları göster</span></button>`;
   const records=filteredRecords().sort((a,b)=>(Number(eligible.get(b.id)!==false)-Number(eligible.get(a.id)!==false))||String(a.date).localeCompare(String(b.date)));
-  if(!records.length){$('records').innerHTML='<div class="empty">Bu filtreye uygun kayıt bulunamadı.</div>';return;}
-  $('records').innerHTML=`<div class="table-wrap"><table class="ojt-table"><thead><tr><th>NO</th><th>YAPILAN İŞLER <em>TASKS PERFORMED</em></th><th>UÇAK / ATÖLYE / KOMPONENT</th><th>TARİH</th><th>SÜRE</th><th>İŞLEM</th></tr></thead><tbody>${records.map((r,index)=>{
+  const unopenedTasks=unopenedArchiveTasks();
+  if(!records.length&&!unopenedTasks.length){$('records').innerHTML=`<div class="empty">${state.connected?'Bu filtreye uygun kayıt bulunamadı.':'Drive bağlantısı bekleniyor.'}</div>`;return;}
+  const recordRows=records.map((r,index)=>{
     const usableRow=eligible.get(r.id)!==false, issues=validation(r);
     const sameDateSelected=!usableRow&&monthly.some(other=>other.id!==r.id&&other.group===r.group&&other.date===r.date&&eligible.get(other.id)!==false);
     const unsuitableText=sameDateSelected?'Bu iş için uygun değil - aynı tarih kullanıldı':'Bu iş için uygun değil - 10 işlik taslak dışında kaldı';
     return `<tr class="${usableRow?'':'duplicate'}"><td data-label="NO">${index+1}</td><td data-label="YAPILAN İŞ"><strong>${esc(taskText(r))}</strong>${!usableRow?`<span class="unsuitable">${unsuitableText}</span>`:''}${issues.length?`<span class="row-warning">${issues.length} eksik bilgi</span>`:''}</td><td data-label="UÇAK / KOMPONENT">${esc(r.aircraft||'-')}</td><td data-label="TARİH">${formatDate(r.date)}</td><td data-label="SÜRE">${formatDuration(r.duration)}</td><td data-label="İŞLEM"><div class="record-actions">${r.document?`<button class="icon" data-document="${esc(r.document.id)}">Belge</button>`:''}<button class="icon" data-edit="${r.id}">Düzenle</button><button class="icon" data-delete="${r.id}">Sil</button></div></td></tr>`;
-  }).join('')}</tbody></table></div>`;
+  }).join('');
+  const unopenedRows=unopenedTasks.map(task=>`<tr class="unopened-archive-row"><td data-label="NO">—</td><td data-label="YAPILAN İŞ"><strong>${task.id}. ${esc(task.name)}</strong><span class="unopened-archive-note">Tüm kayıt geçmişinde henüz açılmadı · ${taskGroupLabel(task)}</span></td><td data-label="UÇAK / KOMPONENT">—</td><td data-label="TARİH">—</td><td data-label="SÜRE">—</td><td data-label="İŞLEM"><span class="unopened-archive-status">Kayıt yok</span></td></tr>`).join('');
+  $('records').innerHTML=`<div class="table-wrap"><table class="ojt-table"><thead><tr><th>NO</th><th>YAPILAN İŞLER <em>TASKS PERFORMED</em></th><th>UÇAK / ATÖLYE / KOMPONENT</th><th>TARİH</th><th>SÜRE</th><th>İŞLEM</th></tr></thead><tbody>${recordRows}${unopenedRows}</tbody></table></div>`;
 }
 async function load() {
   $('authButton').textContent=state.connected?'Bağlantıyı kes':'Drive’a bağlan';$('syncStatus').textContent=state.connected?`● ${state.user?.email||'Google Drive bağlı'}`:'Drive bağlı değil';
