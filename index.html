@@ -35,7 +35,7 @@
             <label>Uçak / Tescil<input id="aircraft" placeholder="TC-J… / A320"></label>
             <label>Süre (saat)<input id="duration" type="text" inputmode="decimal" placeholder="Örn. 0,75"></label>
             <label>İş grubu<select id="group"><option value="1">Grup 1 · AML/MEL</option><option value="2">Grup 2 · Servis</option><option value="3">Grup 3 · Bakım kartları</option><option value="4">Grup 4 · Teknik işlemler</option><option value="optional">Optional</option></select></label>
-            <label>Ek-16 iş türü<select id="taskType" required></select></label>
+            <label>Ek-16 iş türü<select id="taskType" required></select><span class="field-hint"><strong>Kırmızı:</strong> Henüz kayıt açılmamış iş türü</span></label>
             <label>Belge türü<select id="documentType"><option value="task">Bakım kartı</option><option value="nrc">NRC / Item</option><option value="release">Servise verme / AML</option><option value="other">Diğer</option></select></label>
           </div>
           <fieldset id="stampField" class="hidden"><legend>Doğrulama</legend><label class="check"><input id="stamp" type="checkbox"> TT sicil kaşesi basıldı</label></fieldset>

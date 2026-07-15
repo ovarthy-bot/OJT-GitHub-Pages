@@ -88,10 +88,29 @@ async function deleteRecord(id){const record=state.records.find(item=>item.id===
 async function openDocument(id){const response=await driveFetch(`/files/${encodeURIComponent(id)}?alt=media`),blob=await response.blob(),url=URL.createObjectURL(blob);window.open(url,'_blank','noopener');setTimeout(()=>URL.revokeObjectURL(url),60000)}
 async function loadUser(){const response=await fetch('https://www.googleapis.com/oauth2/v2/userinfo',{headers:{Authorization:`Bearer ${state.accessToken}`}});if(response.ok)state.user=await response.json()}
 
+function openedTaskTypeIds() {
+  const opened=new Set();
+  state.records.forEach(record=>{
+    const directId=String(record.taskType??'').trim();
+    if(TASKS.some(task=>task.id===directId)){opened.add(directId);return}
+    const savedName=String(record.taskName??'').trim().toLocaleLowerCase('tr-TR');
+    const matched=TASKS.find(task=>task.name.toLocaleLowerCase('tr-TR')===savedName);
+    if(matched)opened.add(matched.id);
+  });
+  return opened;
+}
+function updateTaskTypeSelectColor() {
+  const unopened=$('taskType').selectedOptions[0]?.dataset.unopened==='true';
+  $('taskType').classList.toggle('unopened-task-selected',unopened);
+}
 function populateTaskTypes(group, selected='') {
-  const available=TASKS.filter(task=>task.group===group);
-  $('taskType').innerHTML='<option value="">İş türünü seçin</option>'+available.map(task=>`<option value="${task.id}">${task.id}. ${task.name}</option>`).join('');
+  const available=TASKS.filter(task=>task.group===group),opened=openedTaskTypeIds(),canEvaluate=state.connected;
+  $('taskType').innerHTML='<option value="">İş türünü seçin</option>'+available.map(task=>{
+    const unopened=canEvaluate&&!opened.has(task.id);
+    return `<option value="${task.id}"${unopened?' class="unopened-task-option" data-unopened="true" style="color:#b42318;font-weight:700"':''}>${task.id}. ${task.name}</option>`;
+  }).join('');
   $('taskType').value=selected;
+  updateTaskTypeSelectColor();
 }
 function updateStampVisibility() {
   const visible=Boolean($('taskCard').value.trim()||$('nrc').value.trim());
@@ -100,6 +119,7 @@ function updateStampVisibility() {
 }
 populateTaskTypes('1');
 $('group').addEventListener('change',()=>populateTaskTypes($('group').value));
+$('taskType').addEventListener('change',updateTaskTypeSelectColor);
 $('taskCard').addEventListener('input',updateStampVisibility); $('nrc').addEventListener('input',updateStampVisibility);
 
 function validation(record) {
@@ -161,6 +181,7 @@ function taskText(r) {
   return `${r.description} ${refs.join(' ')}`;
 }
 function render() {
+  populateTaskTypes($('group').value,$('taskType').value);
   const monthly=monthRecords(), eligible=eligibility(monthly), usable=monthly.filter(r=>eligible.get(r.id)!==false);
   const days=new Set(usable.map(r=>r.date)).size, complete=usable.filter(r=>validation(r).length===0&&r.document).length;
   const hours=usable.reduce((sum,r)=>sum+Number(r.duration||0),0);
