@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = { records: [], connected: false, notesTimer: null, accessToken: null, tokenClient: null, driveContext: null, user: null };
+const state = { records: [], connected: false, notesTimer: null, accessToken: null, tokenClient: null, driveContext: null, user: null, calendarMonth: '2026-07' };
 const ROOT_FOLDER='OJT İş Takip', DATA_FILE='ojt-kayitlari.json', NOTES_FILE='ojt-notlar.json';
 const CLIENT_ID=window.OJT_CONFIG?.GOOGLE_CLIENT_ID||'';
 const SCOPES='https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email';
@@ -11,6 +11,34 @@ const TASKS = [
   {id:'8',group:'4',name:'TSM/FIM kullanma'}, {id:'9',group:'4',name:'Komponent söküm takımları'}, {id:'10',group:'4',name:'Sistem/komponent testleri'}, {id:'11',group:'4',name:'Yazılım / Medya / Yükleme / İndirme'},
   {id:'12',group:'optional',name:'Motor Söküm Takımları (Optional)'}, {id:'13',group:'optional',name:'Park / Depolama (Optional)'}
 ];
+const SHIFT_CALENDAR = {
+  '2026-07': {
+    label: 'Temmuz 2026',
+    shifts: {
+      '2026-07-01':'Off','2026-07-02':'Off','2026-07-03':'Off','2026-07-04':'7-3','2026-07-05':'3-11',
+      '2026-07-06':'3-11','2026-07-07':'11-7','2026-07-08':'11-7','2026-07-09':'Off','2026-07-10':'Off',
+      '2026-07-11':'7-3','2026-07-12':'7-3','2026-07-13':'3-11','2026-07-14':'3-11','2026-07-15':'11-7',
+      '2026-07-16':'Off','2026-07-17':'Off','2026-07-18':'Off','2026-07-19':'7-3','2026-07-20':'7-3',
+      '2026-07-21':'3-11','2026-07-22':'3-11','2026-07-23':'11-7','2026-07-24':'11-7','2026-07-25':'Off',
+      '2026-07-26':'Off','2026-07-27':'7-3','2026-07-28':'7-3','2026-07-29':'3-11','2026-07-30':'3-11',
+      '2026-07-31':'11-7'
+    }
+  },
+  '2026-08': {
+    label: 'Ağustos 2026',
+    shifts: {
+      '2026-08-01':'11-7','2026-08-02':'Off','2026-08-03':'Off','2026-08-04':'Off','2026-08-05':'7-3',
+      '2026-08-06':'3-11','2026-08-07':'3-11','2026-08-08':'11-7','2026-08-09':'11-7','2026-08-10':'Off',
+      '2026-08-11':'Off','2026-08-12':'7-3','2026-08-13':'7-3','2026-08-14':'3-11','2026-08-15':'3-11',
+      '2026-08-16':'11-7','2026-08-17':'Off','2026-08-18':'Off','2026-08-19':'Off','2026-08-20':'7-3',
+      '2026-08-21':'7-3','2026-08-22':'3-11','2026-08-23':'3-11','2026-08-24':'11-7','2026-08-25':'11-7',
+      '2026-08-26':'Off','2026-08-27':'Off','2026-08-28':'7-3','2026-08-29':'7-3','2026-08-30':'3-11',
+      '2026-08-31':'3-11'
+    }
+  }
+};
+const SHIFT_MONTHS = Object.keys(SHIFT_CALENDAR);
+const CALENDAR_DAY_LABELS = ['Pzt','Sal','Çar','Per','Cum','Cmt','Paz'];
 const fields = ['description','workOrder','nrc','taskCard','aml','date','aircraft','duration','group','taskType','documentType','stamp'];
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 const toast = message => { $('toast').textContent=message; $('toast').classList.add('show'); setTimeout(()=>$('toast').classList.remove('show'),2500); };
@@ -168,6 +196,9 @@ function monthRecords() {
     return !selectedMonth||date.startsWith(selectedMonth);
   });
 }
+function recordQuality(record) {
+  return (record?.document?30:0)+(validation(record).length===0?20:0)+(record?.taskCard||record?.nrc||record?.aml?10:0)+(Number(record?.duration)>0?2:0);
+}
 function duplicateDateInfo(records) {
   const byDate=new Map();
   records.forEach(record=>{
@@ -176,7 +207,7 @@ function duplicateDateInfo(records) {
     if(!byDate.has(date))byDate.set(date,[]);
     byDate.get(date).push(record);
   });
-  const duplicateRecords=new Set(),counts=new Map(),duplicateDates=new Set();
+  const duplicateRecords=new Set(),preferredRecords=new Set(),rejectedRecords=new Set(),counts=new Map(),duplicateDates=new Set(),preferredByDate=new Map();
   byDate.forEach((items,date)=>{
     counts.set(date,items.length);
     if(items.length>1){
@@ -184,7 +215,78 @@ function duplicateDateInfo(records) {
       items.forEach(item=>duplicateRecords.add(item));
     }
   });
-  return {byDate,duplicateRecords,counts,duplicateDates};
+
+  // Her iş türü için her tarihteki en güçlü kaydı belirle. Böylece aynı gün içindeki
+  // seçim, belge/eksik bilgi kalitesini ve iş türünün başka günlerde bulunup bulunmadığını dikkate alır.
+  const taskDateRecords=new Map();
+  records.forEach(record=>{
+    const date=normalizeDate(record?.date),taskId=resolveTask(record)?.id||String(record?.taskType||'').trim();
+    if(!date||!taskId)return;
+    if(!taskDateRecords.has(taskId))taskDateRecords.set(taskId,new Map());
+    const dateMap=taskDateRecords.get(taskId),current=dateMap.get(date);
+    if(!current||recordQuality(record)>recordQuality(current))dateMap.set(date,record);
+  });
+  const outsideDuplicateDateCount=taskId=>{
+    const dateMap=taskDateRecords.get(taskId);
+    if(!dateMap)return Number.POSITIVE_INFINITY;
+    return [...dateMap.keys()].filter(date=>!duplicateDates.has(date)).length;
+  };
+
+  // Mükerrer günleri iş türleriyle eşleştirirken, başka bir tekil tarihte hiç açılmamış
+  // iş türleri önce işlenir. Artırmalı eşleştirme aynı iş türünün bütün günleri kapmasını önler.
+  const duplicateCandidatesByTask=new Map();
+  duplicateDates.forEach(date=>{
+    (byDate.get(date)||[]).forEach(record=>{
+      const taskId=resolveTask(record)?.id||String(record?.taskType||'').trim();
+      if(!taskId)return;
+      if(!duplicateCandidatesByTask.has(taskId))duplicateCandidatesByTask.set(taskId,[]);
+      duplicateCandidatesByTask.get(taskId).push(record);
+    });
+  });
+  duplicateCandidatesByTask.forEach((items,taskId)=>items.sort((a,b)=>{
+    const dateA=normalizeDate(a.date),dateB=normalizeDate(b.date);
+    const optionA=(byDate.get(dateA)||[]).length,optionB=(byDate.get(dateB)||[]).length;
+    return optionA-optionB||recordQuality(b)-recordQuality(a)||dateA.localeCompare(dateB)||String(a.createdAt||a.id||'').localeCompare(String(b.createdAt||b.id||''));
+  }));
+  const dateMatch=new Map();
+  const assign=(taskId,seenTasks,seenDates)=>{
+    if(seenTasks.has(taskId))return false;
+    seenTasks.add(taskId);
+    for(const candidate of duplicateCandidatesByTask.get(taskId)||[]){
+      const date=normalizeDate(candidate.date);
+      if(seenDates.has(date))continue;
+      seenDates.add(date);
+      const occupied=dateMatch.get(date),occupiedTask=occupied&&(resolveTask(occupied)?.id||String(occupied.taskType||'').trim());
+      if(!occupied||(occupiedTask&&assign(occupiedTask,seenTasks,seenDates))){dateMatch.set(date,candidate);return true}
+    }
+    return false;
+  };
+  [...duplicateCandidatesByTask.keys()].sort((a,b)=>{
+    const outsideOrder=outsideDuplicateDateCount(a)-outsideDuplicateDateCount(b);
+    if(outsideOrder)return outsideOrder;
+    const candidateOrder=(duplicateCandidatesByTask.get(a)?.length||0)-(duplicateCandidatesByTask.get(b)?.length||0);
+    return candidateOrder||String(a).localeCompare(String(b),'tr',{numeric:true});
+  }).forEach(taskId=>assign(taskId,new Set(),new Set()));
+
+  duplicateDates.forEach(date=>{
+    const items=byDate.get(date)||[];
+    let preferred=dateMatch.get(date);
+    if(!preferred){
+      preferred=[...items].sort((a,b)=>{
+        const taskA=resolveTask(a)?.id||String(a.taskType||'').trim(),taskB=resolveTask(b)?.id||String(b.taskType||'').trim();
+        const outsideOrder=outsideDuplicateDateCount(taskA)-outsideDuplicateDateCount(taskB);
+        if(outsideOrder)return outsideOrder;
+        const dateOptionOrder=(taskDateRecords.get(taskA)?.size||999)-(taskDateRecords.get(taskB)?.size||999);
+        return dateOptionOrder||recordQuality(b)-recordQuality(a)||String(a.createdAt||a.id||'').localeCompare(String(b.createdAt||b.id||''));
+      })[0];
+    }
+    if(preferred){
+      preferredByDate.set(date,preferred);
+      preferredRecords.add(preferred);
+      items.forEach(item=>{if(item!==preferred)rejectedRecords.add(item)});
+    }
+  });
+  return {byDate,duplicateRecords,preferredRecords,rejectedRecords,preferredByDate,counts,duplicateDates};
 }
 function sameDayRecords(value,excludeId='') {
   const date=normalizeDate(value);
@@ -205,17 +307,16 @@ function updateDuplicateDateHint() {
     $('date').classList.remove('duplicate-input');
     return;
   }
-  hint.textContent=`Bu iş için uygun değil - aynı tarih kullanıldı. ${formatDate(date)} tarihinde ${sameDay.length} başka kayıt var; kayıt yine de kaydedilebilir.`;
+  hint.textContent=`${formatDate(date)} tarihinde ${sameDay.length} başka kayıt var. Aynı tarih kaydedilebilir; bu tarihte yalnızca bir kayıt uygun sayılır ve seçimde başka bir tarihte henüz açılmamış iş türüne öncelik verilir.`;
   hint.classList.remove('hidden');
   $('date').classList.add('duplicate-input');
 }
 function eligibility(records,duplicates=duplicateDateInfo(records)) {
-  const result=new Map();
-  const quality=r=>(r.document?30:0)+(validation(r).length===0?20:0)+(r.taskCard||r.nrc||r.aml?10:0);
-  const groups=new Map();
+  const result=new Map(),groups=new Map();
   records.forEach(r=>{
     result.set(r,false);
-    if(duplicates.duplicateRecords.has(r))return;
+    // Mükerrer günün yalnızca otomatik seçilen kaydı değerlendirmeye alınır.
+    if(duplicates.rejectedRecords?.has(r))return;
     const group=resolveTask(r)?.group||r.group;
     if(!groups.has(group))groups.set(group,[]);
     groups.get(group).push(r);
@@ -228,9 +329,9 @@ function eligibility(records,duplicates=duplicateDateInfo(records)) {
       if(!taskId||!date)return;
       if(!byType.has(taskId))byType.set(taskId,new Map());
       const dateMap=byType.get(taskId),current=dateMap.get(date);
-      if(!current||quality(r)>quality(current))dateMap.set(date,r);
+      if(!current||recordQuality(r)>recordQuality(current))dateMap.set(date,r);
     });
-    const candidates=new Map([...byType].map(([type,dateMap])=>[type,[...dateMap.values()].sort((a,b)=>quality(b)-quality(a)||normalizeDate(a.date).localeCompare(normalizeDate(b.date)))]));
+    const candidates=new Map([...byType].map(([type,dateMap])=>[type,[...dateMap.values()].sort((a,b)=>recordQuality(b)-recordQuality(a)||normalizeDate(a.date).localeCompare(normalizeDate(b.date)))]));
     const dateMatch=new Map();
     const assign=(type,seenTypes,seenDates)=>{
       if(seenTypes.has(type))return false;
@@ -250,12 +351,24 @@ function eligibility(records,duplicates=duplicateDateInfo(records)) {
       const date=normalizeDate(r.date);
       if(!date||usedDates.has(date))return;
       const current=remainingByDate.get(date);
-      if(!current||quality(r)>quality(current))remainingByDate.set(date,r);
+      if(!current||recordQuality(r)>recordQuality(current))remainingByDate.set(date,r);
     });
     const matched=[...dateMatch.values()];
-    const remaining=[...remainingByDate.values()].sort((a,b)=>quality(b)-quality(a)||normalizeDate(a.date).localeCompare(normalizeDate(b.date)));
+    const remaining=[...remainingByDate.values()].sort((a,b)=>recordQuality(b)-recordQuality(a)||normalizeDate(a.date).localeCompare(normalizeDate(b.date)));
     const limit=group==='optional'?Number.POSITIVE_INFINITY:10;
-    [...matched,...remaining.slice(0,Math.max(0,limit-matched.length))].forEach(r=>result.set(r,true));
+    const selected=new Set([...matched,...remaining.slice(0,Math.max(0,limit-matched.length))]);
+    const mandatory=groupRecords.filter(r=>duplicates.preferredRecords?.has(r));
+    // Her mükerrer tarihten seçilen kayıt mutlaka uygun kalır. Gerekirse daha düşük
+    // öncelikli, mükerrer olmayan bir kayıt 10 işlik görünümün dışına çıkarılır.
+    mandatory.forEach(record=>{
+      if(selected.has(record))return;
+      if(Number.isFinite(limit)&&selected.size>=limit){
+        const removable=[...selected].filter(item=>!duplicates.preferredRecords?.has(item)).sort((a,b)=>recordQuality(a)-recordQuality(b))[0];
+        if(removable)selected.delete(removable);
+      }
+      selected.add(record);
+    });
+    selected.forEach(r=>result.set(r,true));
   });
   return result;
 }
@@ -306,8 +419,60 @@ function taskText(r) {
   if(r.aml)refs.push(`AML: ${r.aml}`);
   return `${r.description||'İş açıklaması girilmemiş'} ${refs.join(' ')}`;
 }
+function recordsByDate(records=state.records) {
+  const map=new Map();
+  records.forEach(record=>{
+    const date=normalizeDate(record?.date);
+    if(!date)return;
+    if(!map.has(date))map.set(date,[]);
+    map.get(date).push(record);
+  });
+  return map;
+}
+function monthGrid(dateText) {
+  const [year,month]=dateText.split('-').map(Number);
+  const totalDays=new Date(year,month,0).getDate();
+  const firstWeekday=(new Date(year,month-1,1).getDay()+6)%7;
+  const cells=[];
+  for(let i=0;i<firstWeekday;i++)cells.push(null);
+  for(let day=1;day<=totalDays;day++)cells.push(day);
+  while(cells.length%7!==0)cells.push(null);
+  return cells;
+}
+function renderShiftCalendar() {
+  const widget=$('shiftCalendarWidget');
+  if(!widget)return;
+  const selected=SHIFT_CALENDAR[state.calendarMonth] ? state.calendarMonth : SHIFT_MONTHS[0];
+  state.calendarMonth=selected;
+  const monthInfo=SHIFT_CALENDAR[selected];
+  const recordMap=recordsByDate();
+  const days=Object.keys(monthInfo.shifts).sort();
+  const workingDays=days.filter(date=>monthInfo.shifts[date]!=='Off');
+  const filledCount=workingDays.filter(date=>(recordMap.get(date)||[]).length>0).length;
+  const missingCount=workingDays.length-filledCount;
+  const buttons=SHIFT_MONTHS.map(month=>`<button type="button" class="calendar-tab ${month===selected?'active':''}" data-calendar-month="${month}">${esc(SHIFT_CALENDAR[month].label)}</button>`).join('');
+  const weekdayHeader=CALENDAR_DAY_LABELS.map(label=>`<span>${label}</span>`).join('');
+  const cells=monthGrid(selected).map(day=>{
+    if(!day)return '<div class="shift-day spacer" aria-hidden="true"></div>';
+    const date=`${selected}-${pad2(day)}`;
+    const shift=monthInfo.shifts[date]||'';
+    const dayRecords=recordMap.get(date)||[];
+    const isOff=shift==='Off';
+    const isMissing=!isOff&&!dayRecords.length;
+    const isFilled=!isOff&&dayRecords.length>0;
+    const classes=['shift-day'];
+    if(isOff)classes.push('off');
+    if(isMissing)classes.push('missing');
+    if(isFilled)classes.push('filled');
+    const badge=isMissing?'<span class="shift-state">Boş</span>':isFilled?`<span class="shift-state">${dayRecords.length} kayıt</span>`:'<span class="shift-state">Off</span>';
+    return `<div class="${classes.join(' ')}" title="${esc(`${formatDate(date)} · ${shift||'Plan yok'}${isMissing?' · Boş geçildi':isFilled?` · ${dayRecords.length} kayıt var`:''}`)}"><span class="shift-day-number">${day}</span><span class="shift-code">${esc(shift||'—')}</span>${badge}</div>`;
+  }).join('');
+  widget.innerHTML=`<div class="shift-calendar-card"><div class="shift-calendar-head"><div><span class="eyebrow">ÇALIŞMA TAKVİMİ</span><h3>${esc(monthInfo.label)}</h3><p>Yalnızca Temmuz ve Ağustos 2026 için, Off dışındaki boş günler kırmızı gösterilir.</p></div><div class="shift-calendar-stats"><span><strong>${workingDays.length}</strong> planlı gün</span><span><strong>${filledCount}</strong> dolu</span><span class="missing"><strong>${missingCount}</strong> boş</span></div></div><div class="calendar-tabs">${buttons}</div><div class="shift-calendar-weekdays">${weekdayHeader}</div><div class="shift-calendar-grid">${cells}</div></div>`;
+}
 function render() {
   populateTaskTypes($('group').value,$('taskType').value);
+  if(SHIFT_CALENDAR[$('month').value]) state.calendarMonth=$('month').value;
+  renderShiftCalendar();
   const monthly=monthRecords();
   const globalDuplicates=duplicateDateInfo(state.records);
   const eligible=eligibility(monthly,globalDuplicates);
@@ -338,6 +503,8 @@ function render() {
   const records=filteredRecords().sort((a,b)=>{
     const dateOrder=normalizeDate(b.date).localeCompare(normalizeDate(a.date));
     if(dateOrder)return dateOrder;
+    const preferredOrder=Number(globalDuplicates.preferredRecords.has(b))-Number(globalDuplicates.preferredRecords.has(a));
+    if(preferredOrder)return preferredOrder;
     const duplicateOrder=Number(globalDuplicates.duplicateRecords.has(b))-Number(globalDuplicates.duplicateRecords.has(a));
     if(duplicateOrder)return duplicateOrder;
     return String(b.createdAt||'').localeCompare(String(a.createdAt||''));
@@ -350,10 +517,15 @@ function render() {
   }
   const recordRows=records.map((r,index)=>{
     const date=normalizeDate(r.date),duplicateCount=globalDuplicates.counts.get(date)||0,duplicateDay=duplicateCount>1;
+    const preferredDuplicate=duplicateDay&&globalDuplicates.preferredRecords.has(r),rejectedDuplicate=duplicateDay&&globalDuplicates.rejectedRecords.has(r);
+    const preferredRecord=duplicateDay?globalDuplicates.preferredByDate.get(date):null;
     const usableRow=eligible.get(r)!==false,issues=validation(r);
     const unsuitableText='Bu iş için uygun değil - 10 işlik taslak dışında kaldı';
-    const duplicateText=`Bu iş için uygun değil - aynı tarih kullanıldı. ${formatDate(date)} tarihinde ${duplicateCount} kayıt bulunuyor.`;
-    const rowClass=duplicateDay?'duplicate-date':usableRow?'':'ineligible';
+    const preferredText=`Bu tarih için uygun kayıt olarak seçildi. Henüz başka bir tarihte açılmamış veya daha az açılmış iş türlerine öncelik verildi.`;
+    const rejectedText=`Bu iş için uygun değil - aynı tarih kullanıldı. ${formatDate(date)} için uygun kayıt: ${taskHeading(preferredRecord)}.`;
+    const rowClass=preferredDuplicate?'duplicate-date duplicate-preferred':rejectedDuplicate?'duplicate-date duplicate-rejected':usableRow?'':'ineligible';
+    const duplicateMessage=preferredDuplicate?`<span class="duplicate-warning accepted">${esc(preferredText)}</span>`:rejectedDuplicate?`<span class="duplicate-warning">${esc(rejectedText)}</span>`:'';
+    const duplicateBadge=preferredDuplicate?'<span class="date-duplicate-badge accepted">MÜKERRER · UYGUN</span>':rejectedDuplicate?'<span class="date-duplicate-badge">MÜKERRER · UYGUN DEĞİL</span>':'';
     return `<tr class="${rowClass}">
       <td data-label="NO">${index+1}</td>
       <td data-label="İŞ TÜRÜ / YAPILAN İŞ">
@@ -361,11 +533,11 @@ function render() {
         <span class="task-type-heading">${esc(taskHeading(r))}</span>
         <strong class="task-description">${esc(taskText(r))}</strong>
         <span class="task-meta">${esc(recordGroupLabel(r))}</span>
-        ${duplicateDay?`<span class="duplicate-warning">${esc(duplicateText)}</span>`:!usableRow?`<span class="unsuitable">${unsuitableText}</span>`:''}
+        ${duplicateMessage||(!usableRow?`<span class="unsuitable">${unsuitableText}</span>`:'')}
         ${issues.length?`<span class="row-warning">${issues.length} eksik bilgi</span>`:''}
       </td>
       <td data-label="UÇAK / KOMPONENT">${esc(r.aircraft||'-')}</td>
-      <td data-label="TARİH"><span>${esc(formatDate(r.date)||'-')}</span>${duplicateDay?'<span class="date-duplicate-badge">MÜKERRER</span>':''}</td>
+      <td data-label="TARİH"><span>${esc(formatDate(r.date)||'-')}</span>${duplicateBadge}</td>
       <td data-label="SÜRE">${formatDuration(r.duration)}</td>
       <td data-label="İŞLEM"><div class="record-actions">${r.document?`<button class="icon" data-document="${esc(r.document.id)}">Belge</button>`:''}<button class="icon" data-edit="${esc(r.id)}">Düzenle</button><button class="icon danger" data-delete="${esc(r.id)}">Sil</button></div></td>
     </tr>`;
@@ -402,7 +574,7 @@ $('recordForm').addEventListener('submit',async event=>{
   const sameDay=sameDayRecords(record.date,record.id||'');
   if(record.date&&sameDay.length&&!confirm(`${formatDate(record.date)} tarihinde ${sameDay.length} başka kayıt bulunuyor.
 
-Bu iş için uygun değil - aynı tarih kullanıldı. Kayıt arşive eklenebilir ancak uygun iş hesabına dahil edilmez.
+Aynı tarih kaydedilebilir. Bu tarihteki kayıtlardan yalnızca biri uygun sayılacak; uygun kayıt, başka bir tarihte henüz açılmamış iş türlerine öncelik verilerek otomatik seçilecektir.
 
 Yine de kaydedilsin mi?`)){
     $('date').focus();
@@ -415,13 +587,20 @@ Yine de kaydedilsin mi?`)){
   button.textContent='Kaydediliyor…';
   try{
     const saved=await saveRecord(record,$('document').files[0]);
-    const duplicateCount=sameDayRecords(saved.date).length;
-    toast(duplicateCount>1?'Kayıt kaydedildi. Uyarı: aynı tarih kullanıldığı için uygun değil.':'Kayıt Drive’a kaydedildi.');
+    const duplicateCount=sameDayRecords(saved.date).length,duplicateInfo=duplicateDateInfo(state.records);
+    const duplicateMessage=duplicateCount>1?(duplicateInfo.preferredRecords.has(saved)?'Kayıt kaydedildi ve bu tarih için uygun kayıt olarak seçildi.':'Kayıt kaydedildi; aynı tarihteki başka bir kayıt uygun olarak seçildi.'):'Kayıt Drive’a kaydedildi.';
+    toast(duplicateMessage);
     reset();render();
   }catch(error){toast(error.message)}finally{button.disabled=false;button.textContent='Kaydı Drive’a kaydet'}
 });
 function reset(){$('recordForm').reset();$('recordId').value='';$('date').value=todayInputValue();$('group').value='1';populateTaskTypes('1');updateStampVisibility();updateDuplicateDateHint()}
 $('resetButton').addEventListener('click',reset); $('search').addEventListener('input',render); $('month').addEventListener('change',render); $('date').addEventListener('input',updateDuplicateDateHint); $('date').addEventListener('change',updateDuplicateDateHint);
+$('shiftCalendarWidget')?.addEventListener('click',event=>{
+  const button=event.target.closest('[data-calendar-month]');
+  if(!button)return;
+  state.calendarMonth=button.dataset.calendarMonth;
+  renderShiftCalendar();
+});
 $('records').addEventListener('click',async event=>{
   const edit=event.target.dataset.edit,del=event.target.dataset.delete,documentId=event.target.dataset.document;
   if(documentId){try{await openDocument(documentId)}catch(error){toast(error.message)}}

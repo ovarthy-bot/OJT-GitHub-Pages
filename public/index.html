@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="OJT İş Takip">
   <title>OJT İş Takip</title>
-  <link rel="stylesheet" href="styles.css?v=6">
+  <link rel="stylesheet" href="styles.css?v=8">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
 </head>
@@ -51,6 +51,7 @@
       <section class="panel records-panel">
         <div class="panel-title"><div><span class="eyebrow">ARŞİV</span><h2>Kayıtlar</h2><span class="archive-subtitle">Tüm iş grupları tek birleşik listede gösterilir.</span></div><div class="filters"><input id="search" type="search" placeholder="W/O, NRC, uçak veya iş ara"><input id="month" type="month"></div></div>
         <div id="compliance" class="compliance"></div>
+        <div id="shiftCalendarWidget" class="shift-calendar-widget"></div>
         <div id="records" class="records"><div class="empty">Drive bağlantısı bekleniyor.</div></div>
       </section>
     </section>
@@ -58,6 +59,6 @@
   <div id="toast" class="toast"></div>
   <script src="config.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script type="module" src="app.js?v=6"></script>
+  <script type="module" src="app.js?v=8"></script>
 </body>
 </html>
