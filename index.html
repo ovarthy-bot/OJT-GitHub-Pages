@@ -8,7 +8,7 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="OJT İş Takip">
   <title>OJT İş Takip</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=6">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
 </head>
@@ -31,7 +31,7 @@
             <label>NRC numarası<input id="nrc" placeholder="NRC-…"></label>
             <label>Bakım kartı no.<input id="taskCard" placeholder="Task card / AMM ref."></label>
             <label>AML numarası<input id="aml" placeholder="Servise verme kaydı"></label>
-            <label>Tarih *<input id="date" type="date" required></label>
+            <label>Tarih *<input id="date" type="date" required><span id="dateDuplicateHint" class="date-duplicate-hint hidden" role="status"></span></label>
             <label>Uçak / Tescil<input id="aircraft" placeholder="TC-J… / A320"></label>
             <label>Süre (saat)<input id="duration" type="text" inputmode="decimal" placeholder="Örn. 0,75"></label>
             <label>İş grubu<select id="group"><option value="1">Grup 1 · AML/MEL</option><option value="2">Grup 2 · Servis</option><option value="3">Grup 3 · Bakım kartları</option><option value="4">Grup 4 · Teknik işlemler</option><option value="optional">Optional</option></select></label>
@@ -58,6 +58,6 @@
   <div id="toast" class="toast"></div>
   <script src="config.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
-  <script type="module" src="app.js"></script>
+  <script type="module" src="app.js?v=6"></script>
 </body>
 </html>

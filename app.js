@@ -12,20 +12,27 @@ const TASKS = [
   {id:'12',group:'optional',name:'Motor Söküm Takımları (Optional)'}, {id:'13',group:'optional',name:'Park / Depolama (Optional)'}
 ];
 const fields = ['description','workOrder','nrc','taskCard','aml','date','aircraft','duration','group','taskType','documentType','stamp'];
-$('month').value = new Date().toISOString().slice(0,7); $('date').value = new Date().toISOString().slice(0,10);
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 const toast = message => { $('toast').textContent=message; $('toast').classList.add('show'); setTimeout(()=>$('toast').classList.remove('show'),2500); };
 const parseDuration = value => { const normalized=String(value||'').trim().replace(',','.'); return normalized===''?0:Number(normalized); };
 const formatDuration = value => { const minutes=Math.max(0,Math.round(Number(value||0)*60)); return `${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')}`; };
 const pad2 = value => String(value).padStart(2,'0');
+const todayInputValue=()=>{const now=new Date();return `${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`};
+$('month').value=todayInputValue().slice(0,7); $('date').value=todayInputValue();
 function normalizeDate(value) {
-  const raw=String(value??'').trim();
+  if(value instanceof Date&&!Number.isNaN(value.getTime())){
+    return `${value.getFullYear()}-${pad2(value.getMonth()+1)}-${pad2(value.getDate())}`;
+  }
+  const raw=String(value??'').normalize('NFKC').replace(/[\u200B-\u200D\uFEFF]/g,'').replace(/\u00A0/g,' ').trim();
   if(!raw)return '';
   let year,month,day,match;
-  if((match=raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s].*)?$/))){
+  const compact=raw.replace(/\s+/g,' ');
+  if((match=compact.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s].*)?$/))){
     [,year,month,day]=match;
-  }else if((match=raw.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/))){
+  }else if((match=compact.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?:[T\s].*)?$/))){
     [,day,month,year]=match;
+  }else if((match=compact.match(/^(\d{4})(\d{2})(\d{2})$/))){
+    [,year,month,day]=match;
   }else{
     return '';
   }
@@ -101,8 +108,6 @@ async function saveRecord(record,file){
   const normalizedDate=normalizeDate(record.date);
   if(!normalizedDate)throw new Error('Geçerli bir tarih seçin.');
   record.date=normalizedDate;
-  const collision=state.records.find(item=>item.id!==record.id&&normalizeDate(item.date)===normalizedDate);
-  if(collision)throw new Error(`${formatDate(normalizedDate)} tarihinde zaten kayıt var. Mükerrer gün kaydedilemez.`);
   const previous=record.id?state.records.find(item=>item.id===record.id):null;
   if(file){record.document=await uploadDocument(file,record);if(previous?.document?.id)await deleteDriveFile(previous.document.id).catch(()=>{})}
   record.id||=crypto.randomUUID();record.createdAt||=new Date().toISOString();record.updatedAt=new Date().toISOString();
@@ -117,11 +122,8 @@ async function loadUser(){const response=await fetch('https://www.googleapis.com
 function openedTaskTypeIds() {
   const opened=new Set();
   state.records.forEach(record=>{
-    const directId=String(record.taskType??'').trim();
-    if(TASKS.some(task=>task.id===directId)){opened.add(directId);return}
-    const savedName=String(record.taskName??'').trim().toLocaleLowerCase('tr-TR');
-    const matched=TASKS.find(task=>task.name.toLocaleLowerCase('tr-TR')===savedName);
-    if(matched)opened.add(matched.id);
+    const task=resolveTask(record);
+    if(task)opened.add(task.id);
   });
   return opened;
 }
@@ -169,38 +171,63 @@ function monthRecords() {
 function duplicateDateInfo(records) {
   const byDate=new Map();
   records.forEach(record=>{
-    const date=normalizeDate(record.date);
+    const date=normalizeDate(record?.date);
     if(!date)return;
     if(!byDate.has(date))byDate.set(date,[]);
     byDate.get(date).push(record);
   });
-  const duplicateIds=new Set(),counts=new Map(),duplicateDates=new Set();
+  const duplicateRecords=new Set(),counts=new Map(),duplicateDates=new Set();
   byDate.forEach((items,date)=>{
     counts.set(date,items.length);
     if(items.length>1){
       duplicateDates.add(date);
-      items.forEach(item=>duplicateIds.add(item.id));
+      items.forEach(item=>duplicateRecords.add(item));
     }
   });
-  return {byDate,duplicateIds,counts,duplicateDates};
+  return {byDate,duplicateRecords,counts,duplicateDates};
 }
-function eligibility(records) {
-  const result=new Map(),duplicates=duplicateDateInfo(records);
+function sameDayRecords(value,excludeId='') {
+  const date=normalizeDate(value);
+  if(!date)return [];
+  return state.records.filter(record=>{
+    if(excludeId&&record.id===excludeId)return false;
+    return normalizeDate(record.date)===date;
+  });
+}
+function updateDuplicateDateHint() {
+  const hint=$('dateDuplicateHint');
+  if(!hint)return;
+  const date=normalizeDate($('date').value),excludeId=$('recordId').value||'';
+  const sameDay=sameDayRecords(date,excludeId);
+  if(!date||!sameDay.length){
+    hint.textContent='';
+    hint.classList.add('hidden');
+    $('date').classList.remove('duplicate-input');
+    return;
+  }
+  hint.textContent=`Bu iş için uygun değil - aynı tarih kullanıldı. ${formatDate(date)} tarihinde ${sameDay.length} başka kayıt var; kayıt yine de kaydedilebilir.`;
+  hint.classList.remove('hidden');
+  $('date').classList.add('duplicate-input');
+}
+function eligibility(records,duplicates=duplicateDateInfo(records)) {
+  const result=new Map();
   const quality=r=>(r.document?30:0)+(validation(r).length===0?20:0)+(r.taskCard||r.nrc||r.aml?10:0);
   const groups=new Map();
   records.forEach(r=>{
-    result.set(r.id,false);
-    if(duplicates.duplicateIds.has(r.id))return;
-    if(!groups.has(r.group))groups.set(r.group,[]);
-    groups.get(r.group).push(r);
+    result.set(r,false);
+    if(duplicates.duplicateRecords.has(r))return;
+    const group=resolveTask(r)?.group||r.group;
+    if(!groups.has(group))groups.set(group,[]);
+    groups.get(group).push(r);
   });
   groups.forEach((groupRecords,group)=>{
     const byType=new Map();
     groupRecords.forEach(r=>{
       const date=normalizeDate(r.date);
-      if(!r.taskType||!date)return;
-      if(!byType.has(r.taskType))byType.set(r.taskType,new Map());
-      const dateMap=byType.get(r.taskType),current=dateMap.get(date);
+      const taskId=resolveTask(r)?.id||String(r.taskType||'').trim();
+      if(!taskId||!date)return;
+      if(!byType.has(taskId))byType.set(taskId,new Map());
+      const dateMap=byType.get(taskId),current=dateMap.get(date);
       if(!current||quality(r)>quality(current))dateMap.set(date,r);
     });
     const candidates=new Map([...byType].map(([type,dateMap])=>[type,[...dateMap.values()].sort((a,b)=>quality(b)-quality(a)||normalizeDate(a.date).localeCompare(normalizeDate(b.date)))]));
@@ -213,7 +240,7 @@ function eligibility(records) {
         if(seenDates.has(date))continue;
         seenDates.add(date);
         const occupied=dateMatch.get(date);
-        if(!occupied||assign(occupied.taskType,seenTypes,seenDates)){dateMatch.set(date,candidate);return true}
+        if(!occupied||assign(resolveTask(occupied)?.id||String(occupied.taskType||'').trim(),seenTypes,seenDates)){dateMatch.set(date,candidate);return true}
       }
       return false;
     };
@@ -228,23 +255,34 @@ function eligibility(records) {
     const matched=[...dateMatch.values()];
     const remaining=[...remainingByDate.values()].sort((a,b)=>quality(b)-quality(a)||normalizeDate(a.date).localeCompare(normalizeDate(b.date)));
     const limit=group==='optional'?Number.POSITIVE_INFINITY:10;
-    [...matched,...remaining.slice(0,Math.max(0,limit-matched.length))].forEach(r=>result.set(r.id,true));
+    [...matched,...remaining.slice(0,Math.max(0,limit-matched.length))].forEach(r=>result.set(r,true));
   });
   return result;
 }
 function resolveTask(record) {
-  const directId=String(record.taskType??'').trim();
-  const byId=TASKS.find(task=>task.id===directId);
-  if(byId)return byId;
-  const savedName=String(record.taskName??'').trim().toLocaleLowerCase('tr-TR');
-  return TASKS.find(task=>task.name.toLocaleLowerCase('tr-TR')===savedName)||null;
+  const idCandidates=[record?.taskType,record?.taskId,record?.task_type,record?.workTypeId,record?.isTuruId];
+  for(const candidate of idCandidates){
+    const text=String(candidate??'').trim(),match=text.match(/^(\d{1,2})(?:\D|$)/),id=match?.[1]||text;
+    const task=TASKS.find(item=>item.id===id);
+    if(task)return task;
+  }
+  const nameCandidates=[record?.taskName,record?.workType,record?.task,record?.task_type_name,record?.isTuru];
+  for(const candidate of nameCandidates){
+    const name=String(candidate??'').trim().replace(/^\d{1,2}[.)\-:]?\s*/,'').toLocaleLowerCase('tr-TR');
+    if(!name)continue;
+    const task=TASKS.find(item=>item.name.toLocaleLowerCase('tr-TR')===name);
+    if(task)return task;
+  }
+  return null;
 }
 function taskHeading(record) {
   const task=resolveTask(record);
   if(task)return `${task.id}. ${task.name}`;
-  const id=String(record.taskType??'').trim(),name=String(record.taskName??'').trim();
+  const id=String(record?.taskType??record?.taskId??'').trim(),name=String(record?.taskName??record?.workType??record?.isTuru??'').trim();
   if(id&&name)return `${id}. ${name}`;
-  return name||'İş türü belirtilmemiş';
+  if(name)return name;
+  if(id)return id;
+  return 'İş türü belirtilmemiş';
 }
 function recordGroupLabel(record) {
   const task=resolveTask(record),group=task?.group||record.group;
@@ -270,12 +308,15 @@ function taskText(r) {
 }
 function render() {
   populateTaskTypes($('group').value,$('taskType').value);
-  const monthly=monthRecords(),duplicates=duplicateDateInfo(monthly),eligible=eligibility(monthly);
-  const usable=monthly.filter(r=>eligible.get(r.id)!==false);
+  const monthly=monthRecords();
+  const globalDuplicates=duplicateDateInfo(state.records);
+  const eligible=eligibility(monthly,globalDuplicates);
+  const usable=monthly.filter(r=>eligible.get(r)!==false);
   const days=new Set(usable.map(r=>normalizeDate(r.date)).filter(Boolean)).size;
   const complete=usable.filter(r=>validation(r).length===0&&r.document).length;
   const hours=usable.reduce((sum,r)=>sum+Number(r.duration||0),0);
-  const duplicateDays=duplicates.duplicateDates.size;
+  const selectedMonth=$('month').value;
+  const duplicateDays=[...globalDuplicates.duplicateDates].filter(date=>!selectedMonth||date.startsWith(selectedMonth)).length;
   $('metrics').innerHTML=[
     ['Bu ay kullanılabilir',usable.length,usable.length>=40?'good':'warn'],
     ['Farklı gün',`${days} / 13`,days>=12?'good':'warn'],
@@ -284,36 +325,39 @@ function render() {
     ['Toplam süre',`${hours.toLocaleString('tr-TR',{maximumFractionDigits:2})} sa.`,hours>0?'good':'warn']
   ].map(([label,value,status])=>`<div class="metric ${status}"><span>${label}</span><strong>${value}</strong></div>`).join('');
 
-  $('compliance').innerHTML=['1','2','3','4','optional'].map(group=>{
+  const groupSummaries=['1','2','3','4','optional'].map(group=>{
     const items=usable.filter(r=>(resolveTask(r)?.group||r.group)===group);
-    const types=new Set(items.map(r=>String(r.taskType||resolveTask(r)?.id||'')).filter(Boolean));
+    const types=new Set(items.map(r=>resolveTask(r)?.id||String(r.taskType||'').trim()).filter(Boolean));
     const expected=TASKS.filter(t=>t.group===group),missing=expected.filter(t=>!types.has(t.id));
-    const ok=group==='optional'?items.length>0:items.length>=10&&!missing.length;
+    const ok=group==='optional'?true:items.length>=10&&!missing.length;
     const detail=group==='optional'?`${items.length} iş · zorunlu değil`:`${items.length}/10 iş · ${missing.length?`${missing.length} tür eksik`:'tüm türler mevcut'}`;
-    return `<article class="group-card ${ok?'ok':''}" title="${esc(missing.map(t=>t.name).join(', '))}"><strong>${group==='optional'?'Optional':`Grup ${group}`}</strong><span>${detail}</span></article>`;
+    return `<span class="archive-overview-item ${ok?'ok':''}" title="${esc(missing.map(t=>t.name).join(', '))}"><strong>${group==='optional'?'Optional':`Grup ${group}`}</strong> ${esc(detail)}</span>`;
   }).join('');
+  $('compliance').innerHTML=`<section class="archive-overview"><div><strong>Birleşik arşiv</strong><span>Seçilen aydaki bütün iş grupları tek listede gösterilir.</span></div><div class="archive-overview-items">${groupSummaries}</div></section>`;
 
   const records=filteredRecords().sort((a,b)=>{
     const dateOrder=normalizeDate(b.date).localeCompare(normalizeDate(a.date));
     if(dateOrder)return dateOrder;
-    const duplicateOrder=Number(duplicates.duplicateIds.has(b.id))-Number(duplicates.duplicateIds.has(a.id));
+    const duplicateOrder=Number(globalDuplicates.duplicateRecords.has(b))-Number(globalDuplicates.duplicateRecords.has(a));
     if(duplicateOrder)return duplicateOrder;
     return String(b.createdAt||'').localeCompare(String(a.createdAt||''));
   });
   const unopenedTasks=unopenedArchiveTasks();
   if(!records.length&&!unopenedTasks.length){
     $('records').innerHTML=`<div class="empty">${state.connected?'Bu filtreye uygun kayıt bulunamadı.':'Drive bağlantısı bekleniyor.'}</div>`;
+    updateDuplicateDateHint();
     return;
   }
   const recordRows=records.map((r,index)=>{
-    const date=normalizeDate(r.date),duplicateCount=duplicates.counts.get(date)||0,duplicateDay=duplicateCount>1;
-    const usableRow=eligible.get(r.id)!==false,issues=validation(r);
+    const date=normalizeDate(r.date),duplicateCount=globalDuplicates.counts.get(date)||0,duplicateDay=duplicateCount>1;
+    const usableRow=eligible.get(r)!==false,issues=validation(r);
     const unsuitableText='Bu iş için uygun değil - 10 işlik taslak dışında kaldı';
-    const duplicateText=`Mükerrer gün: ${formatDate(date)} tarihinde ${duplicateCount} kayıt var. Bu tarihteki kayıtların hiçbiri uygun sayılmaz.`;
+    const duplicateText=`Bu iş için uygun değil - aynı tarih kullanıldı. ${formatDate(date)} tarihinde ${duplicateCount} kayıt bulunuyor.`;
     const rowClass=duplicateDay?'duplicate-date':usableRow?'':'ineligible';
     return `<tr class="${rowClass}">
       <td data-label="NO">${index+1}</td>
       <td data-label="İŞ TÜRÜ / YAPILAN İŞ">
+        <span class="task-type-label">İŞ TÜRÜ</span>
         <span class="task-type-heading">${esc(taskHeading(r))}</span>
         <strong class="task-description">${esc(taskText(r))}</strong>
         <span class="task-meta">${esc(recordGroupLabel(r))}</span>
@@ -321,25 +365,29 @@ function render() {
         ${issues.length?`<span class="row-warning">${issues.length} eksik bilgi</span>`:''}
       </td>
       <td data-label="UÇAK / KOMPONENT">${esc(r.aircraft||'-')}</td>
-      <td data-label="TARİH">${esc(formatDate(r.date)||'-')}</td>
+      <td data-label="TARİH"><span>${esc(formatDate(r.date)||'-')}</span>${duplicateDay?'<span class="date-duplicate-badge">MÜKERRER</span>':''}</td>
       <td data-label="SÜRE">${formatDuration(r.duration)}</td>
       <td data-label="İŞLEM"><div class="record-actions">${r.document?`<button class="icon" data-document="${esc(r.document.id)}">Belge</button>`:''}<button class="icon" data-edit="${esc(r.id)}">Düzenle</button><button class="icon danger" data-delete="${esc(r.id)}">Sil</button></div></td>
     </tr>`;
   }).join('');
   const unopenedRows=unopenedTasks.map(task=>`<tr class="unopened-archive-row">
     <td data-label="NO">—</td>
-    <td data-label="İŞ TÜRÜ / YAPILAN İŞ"><span class="task-type-heading">${task.id}. ${esc(task.name)}</span><span class="unopened-archive-note">Tüm kayıt geçmişinde henüz açılmadı · ${taskGroupLabel(task)}</span></td>
+    <td data-label="İŞ TÜRÜ / YAPILAN İŞ"><span class="task-type-label">İŞ TÜRÜ</span><span class="task-type-heading">${task.id}. ${esc(task.name)}</span><span class="unopened-archive-note">Tüm kayıt geçmişinde henüz açılmadı · ${taskGroupLabel(task)}</span></td>
     <td data-label="UÇAK / KOMPONENT">—</td><td data-label="TARİH">—</td><td data-label="SÜRE">—</td>
     <td data-label="İŞLEM"><span class="unopened-archive-status">Kayıt yok</span></td>
   </tr>`).join('');
   $('records').innerHTML=`<div class="table-wrap"><table class="ojt-table"><thead><tr><th>NO</th><th>İŞ TÜRÜ / YAPILAN İŞ <em>TASK TYPE / TASKS PERFORMED</em></th><th>UÇAK / ATÖLYE / KOMPONENT</th><th>TARİH</th><th>SÜRE</th><th>İŞLEM</th></tr></thead><tbody>${recordRows}${unopenedRows}</tbody></table></div>`;
+  updateDuplicateDateHint();
 }
 async function load() {
   $('authButton').textContent=state.connected?'Bağlantıyı kes':'Drive’a bağlan';$('syncStatus').textContent=state.connected?`● ${state.user?.email||'Google Drive bağlı'}`:'Drive bağlı değil';
   if(!CLIENT_ID||CLIENT_ID.startsWith('BURAYA_')){$('setupNotice').classList.remove('hidden');$('setupNotice').innerHTML='<strong>Google Client ID gerekli.</strong> public/config.js dosyasındaki örnek değeri Google Cloud Web Client ID ile değiştirin.'}else $('setupNotice').classList.add('hidden');
   if(!state.connected){$('notes').disabled=true;render();return}
   const [records,notes]=await Promise.all([readJson(DATA_FILE,[]),readJson(NOTES_FILE,{text:'',updatedAt:null})]);
-  state.records=Array.isArray(records)?records:[];$('notes').value=notes.text||'';$('notes').disabled=false;$('notesStatus').textContent='Drive ile eşitlendi';render();
+  state.records=(Array.isArray(records)?records:[]).map(record=>{
+    const task=resolveTask(record);
+    return {...record,id:record.id||crypto.randomUUID(),date:normalizeDate(record.date)||record.date,taskType:task?.id||record.taskType,taskName:task?.name||record.taskName,group:task?.group||record.group};
+  });$('notes').value=notes.text||'';$('notes').disabled=false;$('notesStatus').textContent='Drive ile eşitlendi';render();
 }
 $('authButton').addEventListener('click',async()=>{try{if(state.connected){if(state.accessToken)google.accounts.oauth2.revoke(state.accessToken);localStorage.removeItem('ojt_google_authorized');clearToken();state.user=null;state.records=[];await load()}else{await connectGoogle();await loadUser();await load()}}catch(error){toast(error.message)}});
 $('recordForm').addEventListener('submit',async event=>{
@@ -351,9 +399,12 @@ $('recordForm').addEventListener('submit',async event=>{
   record.date=normalizeDate(record.date);
   const task=TASKS.find(t=>t.id===record.taskType);
   if(task){record.group=task.group;record.taskName=task.name}
-  const sameDay=state.records.filter(item=>item.id!==record.id&&normalizeDate(item.date)===record.date);
-  if(record.date&&sameDay.length){
-    alert(`${formatDate(record.date)} tarihinde zaten ${sameDay.length} kayıt bulunuyor.\n\nMükerrer günlere izin verilmez. Kaydı oluşturmak için farklı bir tarih seçin veya mevcut kaydın tarihini düzeltin.`);
+  const sameDay=sameDayRecords(record.date,record.id||'');
+  if(record.date&&sameDay.length&&!confirm(`${formatDate(record.date)} tarihinde ${sameDay.length} başka kayıt bulunuyor.
+
+Bu iş için uygun değil - aynı tarih kullanıldı. Kayıt arşive eklenebilir ancak uygun iş hesabına dahil edilmez.
+
+Yine de kaydedilsin mi?`)){
     $('date').focus();
     return;
   }
@@ -362,16 +413,21 @@ $('recordForm').addEventListener('submit',async event=>{
   const button=event.submitter;
   button.disabled=true;
   button.textContent='Kaydediliyor…';
-  try{await saveRecord(record,$('document').files[0]);toast('Kayıt Drive’a kaydedildi.');reset();render()}catch(error){toast(error.message)}finally{button.disabled=false;button.textContent='Kaydı Drive’a kaydet'}
+  try{
+    const saved=await saveRecord(record,$('document').files[0]);
+    const duplicateCount=sameDayRecords(saved.date).length;
+    toast(duplicateCount>1?'Kayıt kaydedildi. Uyarı: aynı tarih kullanıldığı için uygun değil.':'Kayıt Drive’a kaydedildi.');
+    reset();render();
+  }catch(error){toast(error.message)}finally{button.disabled=false;button.textContent='Kaydı Drive’a kaydet'}
 });
-function reset(){$('recordForm').reset();$('recordId').value='';$('date').value=new Date().toISOString().slice(0,10);$('group').value='1';populateTaskTypes('1');updateStampVisibility()}
-$('resetButton').addEventListener('click',reset); $('search').addEventListener('input',render); $('month').addEventListener('change',render);
+function reset(){$('recordForm').reset();$('recordId').value='';$('date').value=todayInputValue();$('group').value='1';populateTaskTypes('1');updateStampVisibility();updateDuplicateDateHint()}
+$('resetButton').addEventListener('click',reset); $('search').addEventListener('input',render); $('month').addEventListener('change',render); $('date').addEventListener('input',updateDuplicateDateHint); $('date').addEventListener('change',updateDuplicateDateHint);
 $('records').addEventListener('click',async event=>{
   const edit=event.target.dataset.edit,del=event.target.dataset.delete,documentId=event.target.dataset.document;
   if(documentId){try{await openDocument(documentId)}catch(error){toast(error.message)}}
-  if(edit){const r=state.records.find(x=>x.id===edit);$('group').value=r.group||'1';populateTaskTypes($('group').value,r.taskType||'');fields.filter(id=>!['group','taskType'].includes(id)).forEach(id=>{if(id==='stamp')$(id).checked=Boolean(r[id]);else if(id==='duration')$(id).value=String(r[id]??'').replace('.',',');else if(id==='date')$(id).value=normalizeDate(r[id]);else $(id).value=r[id]??''});$('recordId').value=r.id;updateStampVisibility();scrollTo({top:0,behavior:'smooth'})}
+  if(edit){const r=state.records.find(x=>x.id===edit),task=resolveTask(r);$('group').value=task?.group||r.group||'1';populateTaskTypes($('group').value,task?.id||r.taskType||'');fields.filter(id=>!['group','taskType'].includes(id)).forEach(id=>{if(id==='stamp')$(id).checked=Boolean(r[id]);else if(id==='duration')$(id).value=String(r[id]??'').replace('.',',');else if(id==='date')$(id).value=normalizeDate(r[id]);else $(id).value=r[id]??''});$('recordId').value=r.id;updateStampVisibility();updateDuplicateDateHint();scrollTo({top:0,behavior:'smooth'})}
   if(del&&confirm('Kayıt ve bağlı belge Google Drive’dan silinsin mi?')){try{await deleteRecord(del);toast('Kayıt silindi.');render()}catch(error){toast(error.message)}}
 });
 $('notes').addEventListener('input',()=>{if(!state.connected)return;clearTimeout(state.notesTimer);$('notesStatus').textContent='Kaydediliyor…';state.notesTimer=setTimeout(async()=>{try{await writeJson(NOTES_FILE,{text:$('notes').value.slice(0,50000),updatedAt:new Date().toISOString()});$('notesStatus').textContent='Drive’a kaydedildi'}catch(error){$('notesStatus').textContent='Kaydedilemedi';toast(error.message)}},700)});
-if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).then(registration=>registration.update()).catch(()=>{}));
 (async()=>{try{if(restoreToken())await loadUser();await load()}catch(error){clearToken();state.user=null;await load();toast(error.message)}})();

@@ -2,6 +2,16 @@
 
 Sunucusuz çalışan, kullanıcı verilerini ve belgelerini doğrudan kendi Google Drive hesabında saklayan statik web/PWA uygulaması. Node.js, Render, veritabanı sunucusu ve Client Secret gerektirmez.
 
+
+## Bu sürümdeki kayıt kuralları
+
+- Aynı gün birden fazla iş kaydı oluşturulabilir. Kayıt engellenmez; kaydetmeden önce uyarı gösterilir.
+- Aynı güne ait bütün kayıtlar arşivde **“Bu iş için uygun değil - aynı tarih kullanıldı”** uyarısıyla işaretlenir ve uygun iş hesabına katılmaz.
+- `11.07.2026`, `11/07/2026`, `2026-07-11` ve tarih-saat içeren karşılıkları aynı gün kabul edilir.
+- İş türü her kayıt satırında numarası ve adıyla gösterilir.
+- Arşivde bütün iş grupları tek birleşik kayıt listesinde yer alır.
+- Arayüz koyu tema kullanır.
+
 ## 1. Google Cloud ayarı
 
 1. Google Cloud Console'da kullandığınız projeyi açın.
