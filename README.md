@@ -1,82 +1,86 @@
-# OJT İş Takip - GitHub Pages sürümü
+# OJT İş Takip — GitHub Pages sürümü
 
-Sunucusuz çalışan, kullanıcı verilerini ve belgelerini doğrudan kendi Google Drive hesabında saklayan statik web/PWA uygulaması. Node.js, Render, veritabanı sunucusu ve Client Secret gerektirmez.
+Ek-16 iş kayıtlarını ve taranmış belgeleri doğrudan kullanıcının Google Drive hesabında saklayan statik web/PWA uygulaması. Node.js sunucusu, ayrı veritabanı ve Client Secret gerektirmez.
 
+## Sürüm 9 özellikleri
 
-## Bu sürümdeki kayıt kuralları
+- Belge türüne göre yalnızca gerekli referans alanları gösterilir:
+  - **Bakım kartı:** Bakım kartı no.
+  - **NRC / Item:** NRC no.
+  - **Servise verme / AML:** NRC no. + AML no.
+  - **Diğer:** Referans kutusu gösterilmez.
+- Süre alanı manuel yazılabilir; `−` ve `+` düğmeleriyle 15 dakikalık (`0,25 saat`) adımlarla değiştirilebilir.
+- İş grubu seçimi kaldırılmıştır. Bütün Ek-16 iş türleri tek listede gösterilir.
+- Daha önce hiç açılmamış iş türleri seçim listesinde ve arşivde kırmızı işaretlenir.
+- İkinci ekran olarak **PDF Dashboard** eklenmiştir:
+  - Google Drive’daki bağlı belgelerin ilk sayfa küçük resimleri,
+  - W/O, NRC, A/C, açıklama, etiket ve PDF notu,
+  - Tüm bu alanlarda arama,
+  - Etikete göre filtreleme,
+  - PDF’i açma ve belge bilgilerini düzenleme.
+- Dashboard, masaüstünde sol etiket menüsü ve kart görünümü; mobilde uyarlanabilir tek sütun düzeni kullanır.
 
-- Aynı gün birden fazla iş kaydı oluşturulabilir. Kayıt engellenmez; kaydetmeden önce uyarı gösterilir.
-- Aynı güne ait bütün kayıtlar arşivde **“Bu iş için uygun değil - aynı tarih kullanıldı”** uyarısıyla işaretlenir ve uygun iş hesabına katılmaz.
-- `11.07.2026`, `11/07/2026`, `2026-07-11` ve tarih-saat içeren karşılıkları aynı gün kabul edilir.
-- İş türü her kayıt satırında numarası ve adıyla gösterilir.
-- Arşivde bütün iş grupları tek birleşik kayıt listesinde yer alır.
-- Arayüz koyu tema kullanır.
+## Kayıt ve mükerrer tarih kuralları
+
+- Aynı gün birden fazla kayıt oluşturulabilir; kayıt engellenmez, kaydetmeden önce uyarı gösterilir.
+- Mükerrer bir tarihte yalnızca bir kayıt uygun kabul edilir.
+- Uygun kayıt seçilirken başka bir tekil tarihte henüz açılmamış veya daha az temsil edilen iş türlerine öncelik verilir.
+- Diğer aynı tarihli kayıtlar **“Bu iş için uygun değil — aynı tarih kullanıldı”** uyarısıyla gösterilir.
+- `11.07.2026`, `11/07/2026`, `2026-07-11` ve aynı güne karşılık gelen tarih-saat değerleri aynı tarih kabul edilir.
+- Temmuz ve Ağustos 2026 çalışma takviminde Off dışındaki boş günler kırmızı gösterilir.
 
 ## 1. Google Cloud ayarı
 
-1. Google Cloud Console'da kullandığınız projeyi açın.
-2. **Google Drive API** hizmetinin etkin olduğundan emin olun.
-3. **Google Auth Platform > Clients** bölümünde **Web application** türünde bir OAuth istemcisi oluşturun veya mevcut istemciyi açın.
+1. Google Cloud Console’da projenizi açın.
+2. **Google Drive API** hizmetini etkinleştirin.
+3. **Google Auth Platform > Clients** bölümünde **Web application** türünde OAuth istemcisi oluşturun veya mevcut istemciyi açın.
 4. GitHub Pages adresiniz `https://KULLANICI.github.io/ojt-is-takip/` olacaksa **Authorized JavaScript origins** alanına şunu ekleyin:
 
 ```text
 https://KULLANICI.github.io
 ```
 
-5. Bu statik sürüm callback adresi ve Client Secret kullanmaz.
-6. OAuth uygulaması test modundaysa uygulamayı kullanacak Gmail adreslerini **Audience > Test users** bölümüne ekleyin.
+5. OAuth uygulaması test modundaysa uygulamayı kullanacak Gmail adreslerini **Audience > Test users** bölümüne ekleyin.
 
 ## 2. Client ID
 
-`public/config.js` dosyasını açıp:
+`public/config.js` dosyasındaki örnek değeri Web Client ID ile değiştirin:
 
 ```js
-GOOGLE_CLIENT_ID: 'BURAYA_GOOGLE_CLIENT_ID.apps.googleusercontent.com'
+window.OJT_CONFIG = {
+  GOOGLE_CLIENT_ID: 'BURAYA_GOOGLE_CLIENT_ID.apps.googleusercontent.com'
+};
 ```
 
-değerini Google Cloud'daki Web Client ID ile değiştirin. Client ID herkese açık bir tanımlayıcıdır; Client Secret değildir.
+Client ID herkese açık tanımlayıcıdır. Client Secret eklemeyin.
 
-## 3. GitHub'a gönderme
+## 3. GitHub Pages yayını
 
-GitHub'da tercihen `ojt-is-takip` adlı bir depo oluşturun. GitHub Free kullanıyorsanız ücretsiz Pages yayını için depoyu **Public** oluşturun. Public olan yalnızca uygulama kaynak kodudur; kullanıcıların Drive kayıtları ve belgeleri depoya gönderilmez. Proje klasöründe:
-
-```bash
-git init
-git add .
-git commit -m "GitHub Pages OJT uygulamasi"
-git branch -M main
-git remote add origin https://github.com/KULLANICI/ojt-is-takip.git
-git push -u origin main
-```
-
-## 4. GitHub Pages'ı açma
-
-1. GitHub deposunda **Settings > Pages** bölümünü açın.
-2. **Build and deployment > Source** alanında **GitHub Actions** seçin.
-3. Depodaki `.github/workflows/pages.yml` iş akışı `public` klasörünü otomatik yayınlar.
-4. **Actions** sekmesindeki `GitHub Pages` işlemi tamamlandığında site adresi görüntülenir.
-
-Sonraki değişikliklerde yalnızca:
+Depoyu GitHub’a gönderin:
 
 ```bash
 git add .
-git commit -m "Uygulama guncellemesi"
+git commit -m "OJT uygulamasi v9"
 git push
 ```
 
-komutları yeterlidir.
+Ardından depoda **Settings > Pages > Build and deployment > Source** bölümünden **GitHub Actions** seçin. `.github/workflows/pages.yml` dosyası `public` klasörünü yayınlar.
 
-## iPhone'a uygulama gibi ekleme
+## PWA kurulumu
 
-1. Siteyi Safari'de açın.
-2. **Paylaş** düğmesine dokunun.
-3. **Ana Ekrana Ekle** seçin.
+### iPhone / iPad
 
-Uygulama PWA/standalone modunda açılır. Drive işlemleri için internet bağlantısı ve gerektiğinde yeniden Google yetkilendirmesi gerekir.
+Safari’de siteyi açın, **Paylaş > Ana Ekrana Ekle** seçeneğini kullanın.
 
-## Güvenlik
+### Android / masaüstü Chrome
 
-- Google Drive verileri GitHub'a yazılmaz.
-- Uygulama `drive.file` izni kullanır ve yalnızca kendi oluşturduğu/seçtiği dosyaları yönetir.
-- Erişim anahtarı yalnızca açık tarayıcı oturumunun belleğinde tutulur; localStorage'a kaydedilmez.
-- Client Secret bu projede kullanılmaz ve hiçbir dosyaya yazılmamalıdır.
+Tarayıcının adres çubuğundaki **Yükle** seçeneğini veya menüdeki **Uygulamayı yükle** komutunu kullanın.
+
+## Veri ve güvenlik
+
+- Kayıtlar `OJT İş Takip/ojt-kayitlari.json` dosyasında saklanır.
+- Belgeler `OJT İş Takip/Belgeler` klasörüne yüklenir.
+- PDF Dashboard küçük resimleri Google Drive’ın belge önizlemesinden alınır.
+- Uygulama `drive.file` iznini kullanır ve kendi oluşturduğu dosyaları yönetir.
+- Google erişim anahtarı tarayıcıda süreli olarak saklanır; süresi dolduğunda yeniden bağlantı istenir.
+- Drive verileri GitHub deposuna yazılmaz.

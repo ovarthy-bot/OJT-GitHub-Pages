@@ -1,7 +1,7 @@
 {
   "name": "OJT İş Takip",
   "short_name": "OJT Takip",
-  "description": "Ek-16 iş kayıtlarını Google Drive üzerinde yönetin.",
+  "description": "Ek-16 iş kayıtlarını ve PDF belgelerini Google Drive üzerinde yönetin.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const state = { records: [], connected: false, notesTimer: null, accessToken: null, tokenClient: null, driveContext: null, user: null, calendarMonth: '2026-07' };
+const state = { records: [], connected: false, notesTimer: null, accessToken: null, tokenClient: null, driveContext: null, user: null, calendarMonth: '2026-07', activeView: localStorage.getItem('ojt_active_view')==='dashboard'?'dashboard':'records', dashboardTag: '', thumbnailUrls: new Map(), thumbnailPromises: new Map() };
 const ROOT_FOLDER='OJT İş Takip', DATA_FILE='ojt-kayitlari.json', NOTES_FILE='ojt-notlar.json';
 const CLIENT_ID=window.OJT_CONFIG?.GOOGLE_CLIENT_ID||'';
 const SCOPES='https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email';
@@ -39,11 +39,12 @@ const SHIFT_CALENDAR = {
 };
 const SHIFT_MONTHS = Object.keys(SHIFT_CALENDAR);
 const CALENDAR_DAY_LABELS = ['Pzt','Sal','Çar','Per','Cum','Cmt','Paz'];
-const fields = ['description','workOrder','nrc','taskCard','aml','date','aircraft','duration','group','taskType','documentType','stamp'];
+const fields = ['description','workOrder','nrc','taskCard','aml','date','aircraft','duration','taskType','documentType','stamp'];
 const esc = value => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 const toast = message => { $('toast').textContent=message; $('toast').classList.add('show'); setTimeout(()=>$('toast').classList.remove('show'),2500); };
 const parseDuration = value => { const normalized=String(value||'').trim().replace(',','.'); return normalized===''?0:Number(normalized); };
 const formatDuration = value => { const minutes=Math.max(0,Math.round(Number(value||0)*60)); return `${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')}`; };
+const formatDurationInput = value => { const number=Math.max(0,Number(value||0)); return number.toLocaleString('tr-TR',{minimumFractionDigits:Number.isInteger(number)?1:2,maximumFractionDigits:2}); };
 const pad2 = value => String(value).padStart(2,'0');
 const todayInputValue=()=>{const now=new Date();return `${now.getFullYear()}-${pad2(now.getMonth()+1)}-${pad2(now.getDate())}`};
 $('month').value=todayInputValue().slice(0,7); $('date').value=todayInputValue();
@@ -84,7 +85,7 @@ function restoreToken(){
   try{const saved=JSON.parse(localStorage.getItem(TOKEN_KEY)||'null');if(saved?.accessToken&&saved.expiresAt>Date.now()+60000){state.accessToken=saved.accessToken;state.connected=true;return true}}catch{}
   localStorage.removeItem(TOKEN_KEY);return false;
 }
-function clearToken(){localStorage.removeItem(TOKEN_KEY);state.accessToken=null;state.connected=false;state.driveContext=null}
+function clearToken(){localStorage.removeItem(TOKEN_KEY);state.accessToken=null;state.connected=false;state.driveContext=null;releaseAllThumbnails()}
 async function waitForGoogle(){for(let i=0;i<80;i++){if(window.google?.accounts?.oauth2)return;if(i===79)throw new Error('Google giriş sistemi yüklenemedi.');await sleep(100)}}
 async function connectGoogle(){
   if(!CLIENT_ID||CLIENT_ID.startsWith('BURAYA_'))throw new Error('Önce public/config.js dosyasına Google Client ID yazılmalıdır.');
@@ -111,14 +112,14 @@ async function findChild(name,parentId,mimeType){
   const params=new URLSearchParams({q:parts.join(' and '),fields:'files(id,name)',spaces:'drive',pageSize:'1'});
   return (await driveFetch(`/files?${params}`)).files?.[0]||null;
 }
-async function createMetadata(metadata){return driveFetch('/files?fields=id,name,webViewLink',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(metadata)})}
+async function createMetadata(metadata){return driveFetch('/files?fields=id,name,webViewLink,mimeType',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(metadata)})}
 async function ensureFolder(name,parentId='root'){const mimeType='application/vnd.google-apps.folder',found=await findChild(name,parentId,mimeType);return found?.id||(await createMetadata({name,mimeType,parents:[parentId]})).id}
 async function getDriveContext(){if(state.driveContext)return state.driveContext;const folderId=await ensureFolder(ROOT_FOLDER),documentFolderId=await ensureFolder('Belgeler',folderId);return state.driveContext={folderId,documentFolderId}}
 async function readJson(name,fallback){const {folderId}=await getDriveContext(),file=await findChild(name,folderId);if(!file)return fallback;const response=await driveFetch(`/files/${file.id}?alt=media`);return response instanceof Response?response.json():response}
 async function uploadMultipart(metadata,data,mimeType){
   const boundary=`ojt_${crypto.randomUUID()}`,bytes=data instanceof Blob?await data.arrayBuffer():new TextEncoder().encode(String(data)).buffer;
   const body=new Blob([`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`,bytes,`\r\n--${boundary}--`]);
-  return driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink',{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body});
+  return driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink,mimeType',{method:'POST',headers:{'Content-Type':`multipart/related; boundary=${boundary}`},body});
 }
 async function writeJson(name,value){
   const {folderId}=await getDriveContext(),file=await findChild(name,folderId),body=JSON.stringify(value,null,2);
@@ -137,14 +138,14 @@ async function saveRecord(record,file){
   if(!normalizedDate)throw new Error('Geçerli bir tarih seçin.');
   record.date=normalizedDate;
   const previous=record.id?state.records.find(item=>item.id===record.id):null;
-  if(file){record.document=await uploadDocument(file,record);if(previous?.document?.id)await deleteDriveFile(previous.document.id).catch(()=>{})}
+  if(file){record.document=await uploadDocument(file,record);if(previous?.document?.id){releaseThumbnail(previous.document.id);await deleteDriveFile(previous.document.id).catch(()=>{})}}
   record.id||=crypto.randomUUID();record.createdAt||=new Date().toISOString();record.updatedAt=new Date().toISOString();
-  const records=[...state.records],index=records.findIndex(item=>item.id===record.id);if(index>=0)records[index]={...records[index],...record};else records.unshift(record);
-  await writeJson(DATA_FILE,records);state.records=records;return record;
+  const records=[...state.records],index=records.findIndex(item=>item.id===record.id);let savedRecord;if(index>=0){savedRecord={...records[index],...record};records[index]=savedRecord}else{savedRecord=record;records.unshift(savedRecord)}
+  await writeJson(DATA_FILE,records);state.records=records;return savedRecord;
 }
 const deleteDriveFile=id=>driveFetch(`/files/${encodeURIComponent(id)}`,{method:'DELETE'});
-async function deleteRecord(id){const record=state.records.find(item=>item.id===id);if(record?.document?.id)await deleteDriveFile(record.document.id).catch(()=>{});state.records=state.records.filter(item=>item.id!==id);await writeJson(DATA_FILE,state.records)}
-async function openDocument(id){const response=await driveFetch(`/files/${encodeURIComponent(id)}?alt=media`),blob=await response.blob(),url=URL.createObjectURL(blob);window.open(url,'_blank','noopener');setTimeout(()=>URL.revokeObjectURL(url),60000)}
+async function deleteRecord(id){const record=state.records.find(item=>item.id===id);if(record?.document?.id){releaseThumbnail(record.document.id);await deleteDriveFile(record.document.id).catch(()=>{})}state.records=state.records.filter(item=>item.id!==id);await writeJson(DATA_FILE,state.records)}
+async function openDocument(id){const viewer=window.open('about:blank','_blank');if(viewer){viewer.opener=null;viewer.document.title='PDF yükleniyor…';viewer.document.body.textContent='Belge yükleniyor…'}try{const response=await driveFetch(`/files/${encodeURIComponent(id)}?alt=media`),blob=await response.blob(),url=URL.createObjectURL(blob);if(viewer)viewer.location.href=url;else window.open(url,'_blank','noopener');setTimeout(()=>URL.revokeObjectURL(url),60000)}catch(error){viewer?.close();throw error}}
 async function loadUser(){const response=await fetch('https://www.googleapis.com/oauth2/v2/userinfo',{headers:{Authorization:`Bearer ${state.accessToken}`}});if(response.ok)state.user=await response.json()}
 
 function openedTaskTypeIds() {
@@ -159,24 +160,48 @@ function updateTaskTypeSelectColor() {
   const unopened=$('taskType').selectedOptions[0]?.dataset.unopened==='true';
   $('taskType').classList.toggle('unopened-task-selected',unopened);
 }
-function populateTaskTypes(group, selected='') {
-  const available=TASKS.filter(task=>task.group===group),opened=openedTaskTypeIds(),canEvaluate=state.connected;
-  $('taskType').innerHTML='<option value="">İş türünü seçin</option>'+available.map(task=>{
-    const unopened=canEvaluate&&!opened.has(task.id);
-    return `<option value="${task.id}"${unopened?' class="unopened-task-option" data-unopened="true" style="color:#b42318;font-weight:700"':''}>${task.id}. ${task.name}</option>`;
+function populateTaskTypes(selected='') {
+  const opened=openedTaskTypeIds(),canEvaluate=state.connected;
+  $('taskType').innerHTML='<option value="">İş türünü seçin</option>'+TASKS.map(task=>{
+    const unopened=canEvaluate&&!opened.has(task.id),groupLabel=task.group==='optional'?'Optional':`Grup ${task.group}`;
+    return `<option value="${task.id}"${unopened?' class="unopened-task-option" data-unopened="true" style="color:#b42318;font-weight:700"':''}>${task.id}. ${task.name} · ${groupLabel}</option>`;
   }).join('');
   $('taskType').value=selected;
   updateTaskTypeSelectColor();
 }
+function updateDocumentFields({clearHidden=true}={}) {
+  const type=$('documentType').value;
+  const visible={taskCard:type==='task',nrc:type==='nrc'||type==='release',aml:type==='release'};
+  $('taskCardField').classList.toggle('hidden',!visible.taskCard);
+  $('nrcField').classList.toggle('hidden',!visible.nrc);
+  $('amlField').classList.toggle('hidden',!visible.aml);
+  if(clearHidden){
+    if(!visible.taskCard)$('taskCard').value='';
+    if(!visible.nrc)$('nrc').value='';
+    if(!visible.aml)$('aml').value='';
+  }
+  updateStampVisibility();
+}
 function updateStampVisibility() {
-  const visible=Boolean($('taskCard').value.trim()||$('nrc').value.trim());
+  const type=$('documentType').value;
+  const visible=(type==='task'&&Boolean($('taskCard').value.trim()))||(type==='nrc'&&Boolean($('nrc').value.trim()));
   $('stampField').classList.toggle('hidden',!visible);
   if(!visible) $('stamp').checked=false;
 }
-populateTaskTypes('1');
-$('group').addEventListener('change',()=>populateTaskTypes($('group').value));
+function stepDuration(direction) {
+  const current=parseDuration($('duration').value);
+  const safe=Number.isFinite(current)?current:0;
+  const next=Math.max(0,Math.round((safe+(direction*.25))*4)/4);
+  $('duration').value=formatDurationInput(next);
+  $('duration').dispatchEvent(new Event('input',{bubbles:true}));
+}
+populateTaskTypes();
+updateDocumentFields({clearHidden:false});
 $('taskType').addEventListener('change',updateTaskTypeSelectColor);
+$('documentType').addEventListener('change',()=>updateDocumentFields());
 $('taskCard').addEventListener('input',updateStampVisibility); $('nrc').addEventListener('input',updateStampVisibility);
+$('durationDown').addEventListener('click',()=>stepDuration(-1));
+$('durationUp').addEventListener('click',()=>stepDuration(1));
 
 function validation(record) {
   const warnings=[];
@@ -186,7 +211,7 @@ function validation(record) {
   if(record.documentType==='task'&&!record.taskCard) warnings.push('Bakım kartına göre yapılan işlemde kart numarası yazılmalıdır.');
   if(record.documentType==='nrc'&&!record.nrc) warnings.push('NRC/item işleminde NRC numarası yazılmalıdır.');
   if(record.documentType==='release'&&(!record.nrc||!record.aml)) warnings.push('Servise verme işleminde NRC ve AML numarası birlikte yazılmalıdır.');
-  if(record.documentType!=='release'&&(record.taskCard||record.nrc)&&!record.stamp) warnings.push('Bakım kartı veya NRC işleminde TT sicil kaşesi gereklidir.');
+  if(((record.documentType==='task'&&record.taskCard)||(record.documentType==='nrc'&&record.nrc))&&!record.stamp) warnings.push('Bakım kartı veya NRC işleminde TT sicil kaşesi gereklidir.');
   return warnings;
 }
 function monthRecords() {
@@ -469,8 +494,168 @@ function renderShiftCalendar() {
   }).join('');
   widget.innerHTML=`<div class="shift-calendar-card"><div class="shift-calendar-head"><div><span class="eyebrow">ÇALIŞMA TAKVİMİ</span><h3>${esc(monthInfo.label)}</h3><p>Yalnızca Temmuz ve Ağustos 2026 için, Off dışındaki boş günler kırmızı gösterilir.</p></div><div class="shift-calendar-stats"><span><strong>${workingDays.length}</strong> planlı gün</span><span><strong>${filledCount}</strong> dolu</span><span class="missing"><strong>${missingCount}</strong> boş</span></div></div><div class="calendar-tabs">${buttons}</div><div class="shift-calendar-weekdays">${weekdayHeader}</div><div class="shift-calendar-grid">${cells}</div></div>`;
 }
+
+function releaseThumbnail(documentId) {
+  const url=state.thumbnailUrls.get(documentId);
+  if(url?.startsWith('blob:'))URL.revokeObjectURL(url);
+  state.thumbnailUrls.delete(documentId);
+  state.thumbnailPromises.delete(documentId);
+}
+function releaseAllThumbnails() {
+  [...state.thumbnailUrls.keys()].forEach(releaseThumbnail);
+}
+function normalizeTags(record) {
+  const raw=Array.isArray(record?.tags)?record.tags:(record?.tags??record?.tag??'');
+  const values=Array.isArray(raw)?raw:String(raw).split(/[,;|]/);
+  return [...new Set(values.map(value=>String(value).trim()).filter(Boolean))];
+}
+function inferDocumentType(record) {
+  if(record?.documentType)return record.documentType;
+  if(record?.taskCard)return 'task';
+  if(record?.nrc&&record?.aml)return 'release';
+  if(record?.nrc)return 'nrc';
+  return 'other';
+}
+function dashboardSearchText(record) {
+  return [record.workOrder,record.nrc,record.aml,record.taskCard,record.aircraft,record.description,record.pdfNotes,record.document?.name,taskHeading(record),...normalizeTags(record)].join(' ').toLocaleLowerCase('tr-TR');
+}
+function dashboardPdfRecords() {
+  const query=$('dashboardSearch').value.trim().toLocaleLowerCase('tr-TR');
+  const selectedTag=state.dashboardTag.toLocaleLowerCase('tr-TR');
+  return state.records.filter(record=>record.document?.id)
+    .filter(record=>!query||dashboardSearchText(record).includes(query))
+    .filter(record=>!selectedTag||normalizeTags(record).some(tag=>tag.toLocaleLowerCase('tr-TR')===selectedTag))
+    .sort((a,b)=>normalizeDate(b.date).localeCompare(normalizeDate(a.date))||String(b.updatedAt||b.createdAt||'').localeCompare(String(a.updatedAt||a.createdAt||'')));
+}
+function dashboardMonthKey(record) {
+  const date=normalizeDate(record.date);
+  return date?date.slice(0,7):'Tarihsiz';
+}
+function dashboardMonthLabel(key) {
+  if(key==='Tarihsiz')return 'Tarihsiz Belgeler';
+  const [year,month]=key.split('-').map(Number);
+  const label=new Intl.DateTimeFormat('tr-TR',{month:'long',year:'numeric',timeZone:'UTC'}).format(new Date(Date.UTC(year,month-1,1)));
+  return label.charAt(0).toLocaleUpperCase('tr-TR')+label.slice(1);
+}
+async function getThumbnailUrl(record) {
+  const documentId=record?.document?.id;
+  if(!documentId||!state.connected)return '';
+  if(state.thumbnailUrls.has(documentId))return state.thumbnailUrls.get(documentId);
+  if(state.thumbnailPromises.has(documentId))return state.thumbnailPromises.get(documentId);
+  const promise=(async()=>{
+    try{
+      let metadata=record.document||{},response=null;
+      if(metadata.thumbnailLink){
+        try{response=await driveFetch(metadata.thumbnailLink)}catch{}
+      }
+      if(!(response instanceof Response)){
+        const fetched=await driveFetch(`/files/${encodeURIComponent(documentId)}?fields=id,name,mimeType,thumbnailLink,webViewLink`);
+        metadata={...metadata,...fetched};
+        record.document={...record.document,id:documentId,name:metadata.name||record.document?.name,mimeType:metadata.mimeType||record.document?.mimeType,webViewLink:metadata.webViewLink||record.document?.webViewLink};
+        if(metadata.thumbnailLink){try{response=await driveFetch(metadata.thumbnailLink)}catch{}}
+      }
+      if(!(response instanceof Response)&&String(metadata.mimeType||'').startsWith('image/'))response=await driveFetch(`/files/${encodeURIComponent(documentId)}?alt=media`);
+      if(!(response instanceof Response))return '';
+      const blob=await response.blob();
+      if(!blob.size)return '';
+      const url=URL.createObjectURL(blob);
+      state.thumbnailUrls.set(documentId,url);
+      return url;
+    }catch{
+      return '';
+    }finally{
+      state.thumbnailPromises.delete(documentId);
+    }
+  })();
+  state.thumbnailPromises.set(documentId,promise);
+  return promise;
+}
+function hydrateDashboardThumbnails(records) {
+  if(state.activeView!=='dashboard'||!state.connected)return;
+  records.forEach(async record=>{
+    const documentId=record.document?.id,url=await getThumbnailUrl(record);
+    const targets=[...document.querySelectorAll('[data-thumbnail-target]')].filter(element=>element.dataset.thumbnailTarget===documentId);
+    targets.forEach(target=>{
+      if(!target.isConnected)return;
+      if(!url){target.classList.add('thumbnail-unavailable');target.querySelector('.thumbnail-status')?.replaceChildren('Önizleme yok');return}
+      const image=document.createElement('img');
+      image.src=url;image.alt=`${record.workOrder||record.document?.name||'PDF'} ilk sayfa önizlemesi`;image.loading='lazy';
+      target.replaceChildren(image);
+      target.classList.add('thumbnail-ready');
+    });
+  });
+}
+function renderDashboardTags() {
+  const records=state.records.filter(record=>record.document?.id),counts=new Map();
+  records.forEach(record=>normalizeTags(record).forEach(tag=>counts.set(tag,(counts.get(tag)||0)+1)));
+  $('dashboardAllCount').textContent=records.length;
+  const sorted=[...counts].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],'tr'));
+  $('dashboardTags').innerHTML=sorted.length?sorted.map(([tag,count])=>`<button type="button" class="tag-filter ${state.dashboardTag===tag?'active':''}" data-dashboard-tag="${esc(tag)}"><span><i class="tag-dot"></i>${esc(tag)}</span><strong>${count}</strong></button>`).join(''):'<span class="sidebar-empty">Etiket bulunmuyor.</span>';
+  document.querySelector('[data-dashboard-tag=""]')?.classList.toggle('active',!state.dashboardTag);
+}
+function dashboardCard(record) {
+  const tags=normalizeTags(record),documentName=record.document?.name||'Belge.pdf',ref=record.nrc||record.taskCard||record.aml||'Referans yok';
+  const tagsHtml=tags.length?tags.map(tag=>`<span class="pdf-tag">${esc(tag)}</span>`).join(''):'<span class="pdf-tag muted">Etiketsiz</span>';
+  return `<article class="pdf-card">
+    <button type="button" class="pdf-preview" data-dashboard-open="${esc(record.document.id)}" data-thumbnail-target="${esc(record.document.id)}" title="PDF'i aç">
+      <span class="pdf-placeholder">PDF</span><span class="thumbnail-status">İlk sayfa hazırlanıyor…</span>
+    </button>
+    <div class="pdf-card-body">
+      <div class="pdf-card-title-row"><button type="button" class="pdf-title" data-dashboard-open="${esc(record.document.id)}">${esc(record.workOrder||documentName)}</button><span class="pdf-date">${esc(formatDate(record.date)||'—')}</span></div>
+      <span class="pdf-filename" title="${esc(documentName)}">${esc(documentName)}</span>
+      <p class="pdf-description">${esc(record.description||'Açıklama girilmemiş')}</p>
+      ${record.pdfNotes?`<p class="pdf-note">${esc(record.pdfNotes)}</p>`:''}
+      <div class="pdf-meta"><span><strong>NRC/Ref</strong>${esc(ref)}</span><span><strong>A/C</strong>${esc(record.aircraft||'—')}</span></div>
+      <div class="pdf-tags">${tagsHtml}</div>
+      <div class="pdf-card-actions"><button type="button" class="icon" data-dashboard-open="${esc(record.document.id)}">PDF'i aç</button><button type="button" class="icon edit" data-dashboard-edit="${esc(record.id)}">Bilgileri düzenle</button></div>
+    </div>
+  </article>`;
+}
+function renderDashboard() {
+  renderDashboardTags();
+  const allDocuments=state.records.filter(record=>record.document?.id),records=dashboardPdfRecords();
+  $('dashboardClearSearch').classList.toggle('hidden',!$('dashboardSearch').value);
+  const tagged=allDocuments.filter(record=>normalizeTags(record).length).length,noted=allDocuments.filter(record=>String(record.pdfNotes||'').trim()).length;
+  $('dashboardSummary').innerHTML=[['Toplam PDF',allDocuments.length],['Arama sonucu',records.length],['Etiketli',tagged],['Not eklenen',noted]].map(([label,value])=>`<div><span>${label}</span><strong>${value}</strong></div>`).join('');
+  if(!state.connected){$('dashboardRecords').innerHTML='<div class="empty">PDF Dashboard için önce Google Drive’a bağlanın.</div>';return}
+  if(!records.length){$('dashboardRecords').innerHTML=`<div class="empty">${allDocuments.length?'Arama veya etiket filtresine uygun PDF bulunamadı.':'Henüz PDF eklenmemiş.'}</div>`;return}
+  const groups=new Map();
+  records.forEach(record=>{const key=dashboardMonthKey(record);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(record)});
+  $('dashboardRecords').innerHTML=[...groups].map(([key,items])=>`<section class="pdf-month-group"><div class="pdf-month-heading"><span>${esc(dashboardMonthLabel(key))}</span><strong>${items.length} PDF</strong></div><div class="pdf-grid">${items.map(dashboardCard).join('')}</div></section>`).join('');
+  hydrateDashboardThumbnails(records);
+}
+function setActiveView(view,{scroll=true}={}) {
+  state.activeView=view==='dashboard'?'dashboard':'records';
+  localStorage.setItem('ojt_active_view',state.activeView);
+  $('recordsView').classList.toggle('hidden',state.activeView!=='records');
+  $('dashboardView').classList.toggle('hidden',state.activeView!=='dashboard');
+  document.querySelectorAll('[data-view]').forEach(button=>button.classList.toggle('active',button.dataset.view===state.activeView));
+  if(state.activeView==='dashboard')renderDashboard();
+  if(scroll)window.scrollTo({top:0,behavior:'smooth'});
+}
+function openDashboardEditor(recordId) {
+  const record=state.records.find(item=>item.id===recordId);
+  if(!record)return;
+  $('dashboardRecordId').value=record.id;
+  $('dashboardWorkOrder').value=record.workOrder||'';
+  $('dashboardNrc').value=record.nrc||'';
+  $('dashboardAircraft').value=record.aircraft||'';
+  $('dashboardDescription').value=record.description||'';
+  $('dashboardTagInput').value=normalizeTags(record).join(', ');
+  $('dashboardPdfNotes').value=record.pdfNotes||'';
+  $('dashboardEditor').classList.remove('hidden');
+  document.body.classList.add('modal-open');
+  setTimeout(()=>$('dashboardWorkOrder').focus(),0);
+}
+function closeDashboardEditor() {
+  $('dashboardEditor').classList.add('hidden');
+  document.body.classList.remove('modal-open');
+  $('dashboardEditForm').reset();
+  $('dashboardRecordId').value='';
+}
+
 function render() {
-  populateTaskTypes($('group').value,$('taskType').value);
+  populateTaskTypes($('taskType').value);
   if(SHIFT_CALENDAR[$('month').value]) state.calendarMonth=$('month').value;
   renderShiftCalendar();
   const monthly=monthRecords();
@@ -513,6 +698,7 @@ function render() {
   if(!records.length&&!unopenedTasks.length){
     $('records').innerHTML=`<div class="empty">${state.connected?'Bu filtreye uygun kayıt bulunamadı.':'Drive bağlantısı bekleniyor.'}</div>`;
     updateDuplicateDateHint();
+    renderDashboard();
     return;
   }
   const recordRows=records.map((r,index)=>{
@@ -550,6 +736,7 @@ function render() {
   </tr>`).join('');
   $('records').innerHTML=`<div class="table-wrap"><table class="ojt-table"><thead><tr><th>NO</th><th>İŞ TÜRÜ / YAPILAN İŞ <em>TASK TYPE / TASKS PERFORMED</em></th><th>UÇAK / ATÖLYE / KOMPONENT</th><th>TARİH</th><th>SÜRE</th><th>İŞLEM</th></tr></thead><tbody>${recordRows}${unopenedRows}</tbody></table></div>`;
   updateDuplicateDateHint();
+  renderDashboard();
 }
 async function load() {
   $('authButton').textContent=state.connected?'Bağlantıyı kes':'Drive’a bağlan';$('syncStatus').textContent=state.connected?`● ${state.user?.email||'Google Drive bağlı'}`:'Drive bağlı değil';
@@ -558,7 +745,7 @@ async function load() {
   const [records,notes]=await Promise.all([readJson(DATA_FILE,[]),readJson(NOTES_FILE,{text:'',updatedAt:null})]);
   state.records=(Array.isArray(records)?records:[]).map(record=>{
     const task=resolveTask(record);
-    return {...record,id:record.id||crypto.randomUUID(),date:normalizeDate(record.date)||record.date,taskType:task?.id||record.taskType,taskName:task?.name||record.taskName,group:task?.group||record.group};
+    return {...record,id:record.id||crypto.randomUUID(),date:normalizeDate(record.date)||record.date,taskType:task?.id||record.taskType,taskName:task?.name||record.taskName,group:task?.group||record.group,documentType:inferDocumentType(record),tags:normalizeTags(record)};
   });$('notes').value=notes.text||'';$('notes').disabled=false;$('notesStatus').textContent='Drive ile eşitlendi';render();
 }
 $('authButton').addEventListener('click',async()=>{try{if(state.connected){if(state.accessToken)google.accounts.oauth2.revoke(state.accessToken);localStorage.removeItem('ojt_google_authorized');clearToken();state.user=null;state.records=[];await load()}else{await connectGoogle();await loadUser();await load()}}catch(error){toast(error.message)}});
@@ -593,8 +780,37 @@ Yine de kaydedilsin mi?`)){
     reset();render();
   }catch(error){toast(error.message)}finally{button.disabled=false;button.textContent='Kaydı Drive’a kaydet'}
 });
-function reset(){$('recordForm').reset();$('recordId').value='';$('date').value=todayInputValue();$('group').value='1';populateTaskTypes('1');updateStampVisibility();updateDuplicateDateHint()}
+function reset(){$('recordForm').reset();$('recordId').value='';$('date').value=todayInputValue();populateTaskTypes();updateDocumentFields({clearHidden:false});updateDuplicateDateHint()}
 $('resetButton').addEventListener('click',reset); $('search').addEventListener('input',render); $('month').addEventListener('change',render); $('date').addEventListener('input',updateDuplicateDateHint); $('date').addEventListener('change',updateDuplicateDateHint);
+document.querySelector('.view-tabs').addEventListener('click',event=>{
+  const button=event.target.closest('[data-view]');
+  if(button)setActiveView(button.dataset.view);
+});
+$('dashboardSearch').addEventListener('input',renderDashboard);
+$('dashboardClearSearch').addEventListener('click',()=>{$('dashboardSearch').value='';renderDashboard();$('dashboardSearch').focus()});
+document.querySelector('.dashboard-sidebar')?.addEventListener('click',event=>{
+  const button=event.target.closest('[data-dashboard-tag]');
+  if(!button)return;
+  state.dashboardTag=button.dataset.dashboardTag||'';
+  renderDashboard();
+});
+$('dashboardRecords').addEventListener('click',async event=>{
+  const openButton=event.target.closest('[data-dashboard-open]'),editButton=event.target.closest('[data-dashboard-edit]');
+  if(editButton){openDashboardEditor(editButton.dataset.dashboardEdit);return}
+  if(openButton){try{await openDocument(openButton.dataset.dashboardOpen)}catch(error){toast(error.message)}}
+});
+document.querySelectorAll('[data-close-dashboard-editor]').forEach(element=>element.addEventListener('click',closeDashboardEditor));
+$('dashboardEditForm').addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(!state.connected)return toast('Önce Google Drive’a bağlanın.');
+  const record=state.records.find(item=>item.id===$('dashboardRecordId').value);
+  if(!record)return closeDashboardEditor();
+  const tags=[...new Set($('dashboardTagInput').value.split(/[,;|]/).map(value=>value.trim()).filter(Boolean))];
+  const updated={...record,workOrder:$('dashboardWorkOrder').value.trim(),nrc:$('dashboardNrc').value.trim(),aircraft:$('dashboardAircraft').value.trim(),description:$('dashboardDescription').value.trim(),tags,tag:tags.join(', '),pdfNotes:$('dashboardPdfNotes').value.trim()};
+  const button=event.submitter;button.disabled=true;button.textContent='Kaydediliyor…';
+  try{await saveRecord(updated);closeDashboardEditor();render();toast('PDF bilgileri güncellendi.')}catch(error){toast(error.message)}finally{button.disabled=false;button.textContent='Değişiklikleri kaydet'}
+});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!$('dashboardEditor').classList.contains('hidden'))closeDashboardEditor()});
 $('shiftCalendarWidget')?.addEventListener('click',event=>{
   const button=event.target.closest('[data-calendar-month]');
   if(!button)return;
@@ -604,9 +820,10 @@ $('shiftCalendarWidget')?.addEventListener('click',event=>{
 $('records').addEventListener('click',async event=>{
   const edit=event.target.dataset.edit,del=event.target.dataset.delete,documentId=event.target.dataset.document;
   if(documentId){try{await openDocument(documentId)}catch(error){toast(error.message)}}
-  if(edit){const r=state.records.find(x=>x.id===edit),task=resolveTask(r);$('group').value=task?.group||r.group||'1';populateTaskTypes($('group').value,task?.id||r.taskType||'');fields.filter(id=>!['group','taskType'].includes(id)).forEach(id=>{if(id==='stamp')$(id).checked=Boolean(r[id]);else if(id==='duration')$(id).value=String(r[id]??'').replace('.',',');else if(id==='date')$(id).value=normalizeDate(r[id]);else $(id).value=r[id]??''});$('recordId').value=r.id;updateStampVisibility();updateDuplicateDateHint();scrollTo({top:0,behavior:'smooth'})}
+  if(edit){const r=state.records.find(x=>x.id===edit),task=resolveTask(r);populateTaskTypes(task?.id||r.taskType||'');fields.filter(id=>id!=='taskType').forEach(id=>{if(id==='stamp')$(id).checked=Boolean(r[id]);else if(id==='duration')$(id).value=formatDurationInput(r[id]);else if(id==='date')$(id).value=normalizeDate(r[id]);else if(id==='documentType')$(id).value=inferDocumentType(r);else $(id).value=r[id]??''});$('recordId').value=r.id;updateDocumentFields({clearHidden:false});updateDuplicateDateHint();setActiveView('records',{scroll:false});scrollTo({top:0,behavior:'smooth'})}
   if(del&&confirm('Kayıt ve bağlı belge Google Drive’dan silinsin mi?')){try{await deleteRecord(del);toast('Kayıt silindi.');render()}catch(error){toast(error.message)}}
 });
 $('notes').addEventListener('input',()=>{if(!state.connected)return;clearTimeout(state.notesTimer);$('notesStatus').textContent='Kaydediliyor…';state.notesTimer=setTimeout(async()=>{try{await writeJson(NOTES_FILE,{text:$('notes').value.slice(0,50000),updatedAt:new Date().toISOString()});$('notesStatus').textContent='Drive’a kaydedildi'}catch(error){$('notesStatus').textContent='Kaydedilemedi';toast(error.message)}},700)});
+setActiveView(state.activeView,{scroll:false});
 if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).then(registration=>registration.update()).catch(()=>{}));
 (async()=>{try{if(restoreToken())await loadUser();await load()}catch(error){clearToken();state.user=null;await load();toast(error.message)}})();
